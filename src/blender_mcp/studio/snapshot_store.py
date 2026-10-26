@@ -1,0 +1,222 @@
+"""BAS-12 snapshot storage core.
+
+A snapshot is immutable, written into a private UUID directory beneath an
+explicit writable sandbox root. Blender must save COPY=True into the allocated
+path, then finalize its manifest; callers may only restore verified snapshots.
+This module does not execute bpy or issue destructive confirmation tokens.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import UUID, uuid4
+
+
+class SnapshotError(ValueError):
+    pass
+
+
+def _uuid(value: str) -> str:
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise SnapshotError("Invalid snapshot or scene UUID") from exc
+
+
+def _root(path: str | os.PathLike[str]) -> Path:
+    raw = Path(path).expanduser()
+    if not raw.is_absolute() or ".." in raw.parts:
+        raise SnapshotError("An absolute sandbox root without traversal is required")
+    if raw.is_symlink() or not raw.is_dir() or raw.resolve(strict=True) != raw:
+        raise SnapshotError("Sandbox root is not a canonical directory")
+    mode = raw.stat().st_mode
+    if mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SnapshotError("Sandbox root must not be group/world writable")
+    return raw
+
+
+def _dir_open(path: Path) -> int:
+    """No-follow root access. All children are accessed relative to this fd."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise SnapshotError("Not a directory")
+    return fd
+
+
+def _child_dir(parent_fd: int, name: str, *, create: bool) -> int:
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(name, flags, dir_fd=parent_fd)
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode) or (st.st_mode & 0o077):
+        os.close(fd)
+        raise SnapshotError("Snapshot directory is not private")
+    return fd
+
+
+def _read(fd: int, filename: str, max_bytes: int) -> bytes:
+    file_fd = os.open(filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                      dir_fd=fd)
+    try:
+        st = os.fstat(file_fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            raise SnapshotError("Snapshot file has invalid type/size")
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise SnapshotError("Snapshot file exceeds limit")
+        return data
+    finally:
+        os.close(file_fd)
+
+
+def _write_exclusive(fd: int, filename: str, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    out = os.open(filename, flags, 0o600, dir_fd=fd)
+    try:
+        with os.fdopen(os.dup(out), "wb") as stream:
+            stream.write(content)
+            stream.flush()
+        os.fsync(out)
+    finally:
+        os.close(out)
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    snapshot_id: str
+    path: Path
+    sha256: str
+    scene_id: str
+    scene_revision: int
+    idempotency_key: str
+
+
+class SnapshotStore:
+    """Linux/POSIX dirfd-backed immutable snapshot manifest and checksum.
+
+    A Blender backend must hold a single main-thread write lock across
+    begin -> bpy.save_as_mainfile(copy=True) -> finalize, and report failures.
+    The UUID folder is intentionally private; symlink and path traversal are
+    never accepted through a caller-supplied snapshot identifier.
+    """
+
+    def __init__(self, root: str | os.PathLike[str], *, max_bytes: int = 2 << 30):
+        self.root = _root(root)
+        if type(max_bytes) is not int or max_bytes < 1024:
+            raise SnapshotError("Invalid size limit")
+        self.max_bytes = max_bytes
+
+    def _folder(self, snapshot_id: str, create: bool = False):
+        rid = _uuid(snapshot_id)
+        root_fd = _dir_open(self.root)
+        try:
+            snaps_fd = _child_dir(root_fd, ".bas12-snapshots", create=create)
+            try:
+                snap_fd = _child_dir(snaps_fd, rid, create=create)
+                return snap_fd
+            finally:
+                os.close(snaps_fd)
+        finally:
+            os.close(root_fd)
+
+    def begin(self) -> tuple[str, Path]:
+        rid = str(uuid4())
+        fd = self._folder(rid, create=True)
+        os.close(fd)
+        # Only Blender should write this pathname, and only in our private
+        # directory. No user-controlled basename reaches bpy.
+        return rid, self.root / ".bas12-snapshots" / rid / "scene.blend"
+
+    def finalize(self, snapshot_id: str, *, scene_id: str, scene_revision: int,
+                 idempotency_key: str) -> Snapshot:
+        rid = _uuid(snapshot_id)
+        sid = _uuid(scene_id)
+        if type(scene_revision) is not int or scene_revision < 0:
+            raise SnapshotError("Invalid scene revision")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise SnapshotError("Invalid idempotency key")
+        fd = self._folder(rid)
+        try:
+            digest = hashlib.sha256()
+            file_fd = os.open("scene.blend", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                              dir_fd=fd)
+            try:
+                st = os.fstat(file_fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size < 16 or st.st_size > self.max_bytes:
+                    raise SnapshotError("Missing/invalid Blender scene")
+                while True:
+                    chunk = os.read(file_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                # BLEND header changes across versions; only verify standard
+                # stable signature. Blender reopen will perform deeper checks.
+                os.lseek(file_fd, 0, os.SEEK_SET)
+                if os.read(file_fd, 7) != b"BLENDER":
+                    raise SnapshotError("Snapshot does not contain a BLEND file")
+                os.fsync(file_fd)
+            finally:
+                os.close(file_fd)
+            payload = {
+                "version": 1, "snapshot_id": rid, "scene_id": sid,
+                "scene_revision": scene_revision, "idempotency_key": idempotency_key,
+                "file": "scene.blend", "sha256": digest.hexdigest(),
+                "bytes": st.st_size,
+            }
+            manifest = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+            _write_exclusive(fd, "manifest.json", manifest)
+            os.fsync(fd)
+            return Snapshot(rid, self.root / ".bas12-snapshots" / rid / "scene.blend",
+                            digest.hexdigest(), sid, scene_revision, idempotency_key)
+        finally:
+            os.close(fd)
+
+    def verify(self, snapshot_id: str) -> Snapshot:
+        rid = _uuid(snapshot_id)
+        fd = self._folder(rid)
+        try:
+            content = _read(fd, "manifest.json", 4096)
+            try:
+                manifest = json.loads(content)
+                if (manifest["version"] != 1 or manifest["snapshot_id"] != rid
+                        or manifest["file"] != "scene.blend"
+                        or type(manifest["scene_revision"]) is not int
+                        or manifest["scene_revision"] < 0):
+                    raise SnapshotError("Corrupt snapshot manifest")
+                sid = _uuid(manifest["scene_id"])
+                sha = manifest["sha256"]
+                if not isinstance(sha, str) or len(sha) != 64:
+                    raise SnapshotError("Invalid checksum")
+            except (ValueError, KeyError, TypeError) as exc:
+                raise SnapshotError("Corrupt snapshot manifest") from exc
+            file_fd = os.open("scene.blend", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                              dir_fd=fd)
+            try:
+                st = os.fstat(file_fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size != manifest["bytes"] or st.st_size > self.max_bytes:
+                    raise SnapshotError("Snapshot size mismatch")
+                digest = hashlib.sha256()
+                while True:
+                    chunk = os.read(file_fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                if digest.hexdigest() != sha:
+                    raise SnapshotError("Snapshot checksum mismatch")
+            finally:
+                os.close(file_fd)
+            return Snapshot(rid, self.root / ".bas12-snapshots" / rid / "scene.blend",
+                            sha, sid, manifest["scene_revision"], manifest["idempotency_key"])
+        finally:
+            os.close(fd)
