@@ -140,3 +140,44 @@ def test_text_is_not_implicitly_advertised_as_supported_variant():
 ])
 def test_exposure(profile, expected):
     assert visible_studio_tools(profile) == expected
+
+
+
+def test_unavailable_addon_returns_typed_handshake():
+    def unavailable(*_args):
+        raise Exception("connection refused: secret implementation details")
+
+    info = StudioGateway(unavailable, Policy(Profile.STUDIO_LOCAL)).handshake()
+    assert info["operations"] == []
+    assert info["error"]["code"] == "worker_unavailable"
+    assert "secret implementation details" not in info["error"]["message"]
+
+
+def test_observer_handshake_advertises_only_observer_operations():
+    info = StudioGateway(FakeBridge(), Policy(Profile.OBSERVER)).handshake()
+    assert info["operations"] == ["studio_scene_inspect"]
+
+
+def test_wire_error_wrappers_preserve_stale_and_conflict_codes():
+    for message, code in [("stale_scene: wrong revision", "stale_scene"),
+                          ("conflict: key changed", "conflict")]:
+        class WireBridge(FakeBridge):
+            def __call__(self, command, params, read_only):
+                if command == "studio_create_object_v1":
+                    raise Exception("Communication error with Blender: " + message)
+                return super().__call__(command, params, read_only)
+
+        raw = request("studio_create_object", "scene", scene_id=SCENE,
+                      scene_revision=0, idempotency_key="k", name="Cube",
+                      spec={"kind": "primitive", "primitive": "cube"})
+        response = StudioGateway(WireBridge(), Policy(Profile.STUDIO_LOCAL)).invoke(
+            raw, "studio_create_object")
+        assert response["error"]["code"] == code
+
+
+def test_hidden_legacy_raw_code_cannot_be_called_in_studio_profile(monkeypatch):
+    import asyncio
+    from blender_mcp import server
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "studio-local")
+    with pytest.raises(PermissionError, match="permission_denied"):
+        asyncio.run(server._call_tool_for_profile("execute_blender_code", {"code": "print(1)"}))
