@@ -25,7 +25,11 @@ Output gồm `baseline.blend`, `preview.png`, `render.log`, `reopen.log`, `blend
 
 CI Python chạy trên Ubuntu 24.04. Job golden PR/manual tải đúng archive pin, render + reopen và upload output 30 ngày, cả khi fail để còn log. Artifact CI có hạn lưu, không thay thế lưu trữ lâu dài Colab.
 
-## Colab và phục hồi sau dừng runtime
+## Phạm vi nghiệm thu BAS-02
+
+Theo quyết định ngày 2026-10-26, BAS-02 nghiệm thu trên macOS arm64 local và Ubuntu 24.04 x86_64 CI, đều dùng CPU. Cần manifest môi trường/checksum, BLEND và PNG, log render, kết quả mở lại BLEND và kiểm tra PNG. Colab/Drive và phục hồi sau khi xóa runtime không còn là gate của BAS-02. Không suy diễn bằng chứng local/CI thành kết quả Colab hoặc độ bền của Drive.
+
+## Colab tùy chọn, chưa nghiệm thu
 
 Mở `notebooks/BAS-02-colab-golden.ipynb` trong Colab. Notebook yêu cầu SHA 40 ký tự của PR đã review, checkout detached đúng SHA rồi chạy cùng runner. Kernel Colab chỉ điều phối; uv cài gateway Python đã pin.
 
@@ -34,15 +38,15 @@ Mở `notebooks/BAS-02-colab-golden.ipynb` trong Colab. Notebook yêu cầu SHA 
 3. Kết nối runtime mới, chạy lại Setup ở cùng SHA. Chạy Phase B với đường dẫn cũ, không chạy Phase A. Cell yêu cầu thư mục local Phase A không còn, kiểm tra source SHA sạch, hash artifact trên Drive rồi tải lại Blender đã pin để mở BLEND và decode PNG.
 4. Lưu receipt `recovery-<uuid>.json` ngoài bộ artifact gốc, kèm checksum manifest và log `BAS02_RECOVERY_OK`. Đọc lại receipt sau khi tắt runtime thứ hai để xác minh truy cập từ storage bền vững.
 
-Notebook chưa có output chạy được commit. Việc có notebook, copy vào Drive ở cùng runtime, hoặc mở lại local đều **chưa** thỏa tiêu chí Colab sau runtime dừng. Không tự đánh dấu Done trước bằng chứng này và tích hợp PR.
+Notebook là quy trình thử tùy chọn cho một đợt nghiệm thu sau. Setup tại commit `07a13cf9f7c1a333397df2427c6d5e21d589f5d3` đã mount Drive; lần chạy Phase A bị ngắt khi copy bundle vào Drive, nên không có bundle/receipt phục hồi đã xác minh. Việc có notebook, copy vào Drive ở cùng runtime, hoặc mở lại local đều **chưa** chứng minh dữ liệu còn sau khi runtime dừng. Không đánh dấu Colab pass nếu chưa hoàn thành cả Phase A và Phase B.
 
 ## Ma trận tương thích
 
 | Môi trường | Blender | Python gateway / bpy | Trạng thái |
 | --- | --- | --- | --- |
-| macOS arm64 local CPU | 4.5.15 pin SHA256 | 3.12.14 / đo trong manifest | Chờ chạy |
-| Ubuntu 24.04 x86_64 CI CPU | 4.5.15 pin SHA256 | 3.12.14 / đo trong manifest | Chờ CI |
-| Colab Linux x86_64 CPU | 4.5.15 pin SHA256 | 3.12.14 / đo trong manifest | Chưa thử; cần Drive + runtime reset |
+| macOS arm64 local CPU | 4.5.15 pin SHA256 | 3.12.14 / 3.11.15 | Pass tại `07a13cf`; manifest, BLEND, PNG và log trong `local_tests/bas02/07a13cf-local/` (không commit) |
+| Ubuntu 24.04 x86_64 CI CPU | 4.5.15 pin SHA256 | 3.12.14 / 3.11.15 | Pass tại `07a13cf`; [CI run 40293314534](https://github.com/nguyenvando420-spec/mcp-for-blender/actions/runs/40293314534), artifact `bas02-blender-golden-artifacts` |
+| Colab Linux x86_64 CPU | 4.5.15 pin SHA256 | 3.12.14 / đo trong manifest | Chưa nghiệm thu; không thuộc gate BAS-02 |
 | Windows, Linux ARM64, macOS Intel, GPU | — | — | Chưa thử, chưa hỗ trợ bởi installer |
 
-Chỉ sửa trạng thái trên cơ sở log tại đúng head. Không suy rộng kết quả CPU smoke thành nghiệm thu MCP GUI hoặc GPU; các phần đó thuộc BAS-09 và các ticket worker.
+Chỉ ghi pass trên cơ sở log tại commit chứa implementation được thử; nếu implementation thay đổi, chạy lại. Không suy rộng kết quả CPU smoke thành nghiệm thu MCP GUI hoặc GPU; các phần đó thuộc BAS-09 và các ticket worker.

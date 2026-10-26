@@ -4,7 +4,7 @@ Tài liệu này dành cho fork [nguyenvando420-spec/mcp-for-blender](https://gi
 
 ## 1. Clone và chạy bằng local checkout
 
-Yêu cầu: Git, uv và Python 3.12.14 (theo .python-version, cập nhật BAS-02). Lệnh bên dưới dùng trên Linux/macOS; Windows chưa được nghiệm thu. Runtime Blender, golden smoke và Colab: xem [BAS-02-runtime.md](BAS-02-runtime.md).
+Yêu cầu: Git, uv và Python 3.12.14 (theo .python-version, cập nhật BAS-02). Lệnh bên dưới dùng trên Linux/macOS; Windows chưa được nghiệm thu. Runtime Blender và golden smoke: xem [BAS-02-runtime.md](BAS-02-runtime.md); Colab ở đó là quy trình tùy chọn chưa nghiệm thu.
 
 ~~~bash
 git clone https://github.com/nguyenvando420-spec/mcp-for-blender.git
