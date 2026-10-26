@@ -154,3 +154,26 @@ def test_connection_rejects_public_interface(monkeypatch):
     from blender_mcp.server import resolve_connection
     monkeypatch.setenv("BLENDER_HOST", "0.0.0.0")
     denied(resolve_connection)
+
+
+def test_remote_cannot_read_legacy_resources(monkeypatch):
+    from blender_mcp import server
+    monkeypatch.setenv(PROFILE_ENV, "remote")
+    assert asyncio.run(server._list_resources_for_profile()) == []
+    assert asyncio.run(server._list_resource_templates_for_profile()) == []
+    with pytest.raises(PolicyDenied, match="permission_denied"):
+        asyncio.run(server._read_resource_for_profile("blender://scene"))
+
+
+def test_default_telemetry_never_sends_http_without_opt_in(monkeypatch):
+    import httpx
+    from blender_mcp.config import TelemetryConfig
+    from blender_mcp.telemetry import EventType, TelemetryCollector
+    assert TelemetryConfig().enabled is False
+    def network_forbidden(*_args, **_kwargs):
+        raise AssertionError("Unexpected telemetry egress")
+    monkeypatch.setattr(httpx, "post", network_forbidden)
+    collector = object.__new__(TelemetryCollector)
+    collector.config = TelemetryConfig()
+    collector.record_event(EventType.STARTUP, prompt_text="private")
+    assert collector.upload_screenshot(b"private screenshot", "test") == ""
