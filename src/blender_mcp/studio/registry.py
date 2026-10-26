@@ -79,12 +79,14 @@ class StudioGateway:
                 "remote_authenticated": False,
                 "job_execution": "not_advertised",
             }
-        except (OSError, ConnectionError, RuntimeError, ValueError) as exc:
+        except Exception as exc:
+            # A disconnected local socket can raise a plain Exception from the
+            # legacy bridge. The handshake must fail closed, not crash the MCP client.
             return {
                 "contract": ContractVersion().model_dump(),
                 "operations": [], "profile": self.policy.profile.value,
                 "error": {"code": ErrorCode.WORKER_UNAVAILABLE.value,
-                          "message": str(exc)[:240]},
+                          "message": "Blender add-on unavailable (" + type(exc).__name__ + ")"},
                 "python_executable": sys.executable,
                 "package_file": str(Path(__file__).resolve()),
             }
