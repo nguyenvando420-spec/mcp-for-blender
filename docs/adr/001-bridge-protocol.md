@@ -1,6 +1,6 @@
 # ADR-001 — Giữ FastMCP, version bridge và main-thread dispatch
 
-Status: Proposed for BAS-03 review, 26/10/2026.
+Status: Accepted cho contract v1 sau review kỹ thuật của Codex theo tiêu chí BAS-03, 26/10/2026. Implementation/runtime gates thuộc các task tiếp theo; chưa có review độc lập của con người.
 
 ## Context
 

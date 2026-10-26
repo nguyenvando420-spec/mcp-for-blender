@@ -1,27 +1,18 @@
-"""BAS-03 wire contracts for future Studio adapters.
+"""BAS-03 v1 wire contracts, shared by future GUI and worker adapters.
 
-These models validate boundaries only. They do not dispatch to Blender, persist
-jobs, assign stable IDs, or authorize paths. Later tasks must implement those
-behaviours before exposing the corresponding operation.
+Validation does not dispatch to Blender, authorize paths, persist jobs, or prove
+that a worker stopped. The owning runner supplies verified lifecycle facts.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, Literal, Union
 from uuid import UUID
-import json
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StringConstraints,
-    TypeAdapter,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 
 class StrictModel(BaseModel):
@@ -29,16 +20,19 @@ class StrictModel(BaseModel):
 
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
+Uri = Annotated[str, StringConstraints(min_length=1, max_length=4096, pattern=r"^[a-z][a-z0-9+.-]*://\S+$")]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-GitCommit = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+GitCommit = Annotated[str, StringConstraints(pattern=r"^([0-9a-f]{40}|[0-9a-f]{64})$")]
+Channel = Annotated[float, Field(ge=0, le=1)]
 Vec3 = tuple[float, float, float]
-Color4 = tuple[float, float, float, float]
+Color3 = tuple[Channel, Channel, Channel]
+Color4 = tuple[Channel, Channel, Channel, Channel]
 STUDIO_OPERATIONS = frozenset({
-    "studio_inspect_scene", "studio_capture_viewport", "studio_create_primitive",
-    "studio_create_text", "studio_transform_object", "studio_manage_collection",
-    "studio_delete_object", "studio_set_material", "studio_set_camera",
-    "studio_set_light", "studio_save_scene", "studio_open_scene",
-    "studio_snapshot_scene", "studio_render_still", "studio_export_glb",
+    "studio_scene_inspect", "studio_scene_save", "studio_scene_open",
+    "studio_scene_snapshot", "studio_scene_restore", "studio_create_object",
+    "studio_set_transform", "studio_delete_object", "studio_manage_collection",
+    "studio_assign_material", "studio_set_camera", "studio_set_light",
+    "studio_capture_viewport", "studio_render_still", "studio_export_artifacts",
 })
 
 
@@ -71,20 +65,14 @@ class ContractVersion(StrictModel):
 class Capabilities(StrictModel):
     contract: ContractVersion = Field(default_factory=ContractVersion)
     addon_protocol: int = Field(ge=0)
-    operations: set[str]
-    features: set[str] = Field(default_factory=set)
-
-    @field_validator("operations")
-    @classmethod
-    def known_operations(cls, value: set[str]) -> set[str]:
-        unknown = value - STUDIO_OPERATIONS
-        if unknown:
-            raise ValueError(f"unknown Studio operations: {sorted(unknown)}")
-        return value
+    # Unknown advertised operations are allowed for additive minor versions;
+    # they never become valid v1 requests merely by being advertised.
+    operations: set[NonEmpty]
+    features: set[NonEmpty] = Field(default_factory=set)
 
 
 class ObjectRef(StrictModel):
-    """Persistent UUID stored on the Blender datablock; name is only a label."""
+    """UUID persisted on a datablock; name is only a display label."""
 
     id: UUID
     name: NonEmpty
@@ -94,64 +82,75 @@ class ObjectRef(StrictModel):
 class RequestBase(StrictModel):
     contract: ContractVersion = Field(default_factory=ContractVersion)
     request_id: UUID
-    scene_revision: int = Field(ge=0)
+    scene_id: UUID | None = None
+    scene_revision: int | None = Field(default=None, ge=0)
+    idempotency_key: NonEmpty | None = None
     effect_scope: EffectScope
-    required_scope: ClassVar[EffectScope]
 
     @model_validator(mode="after")
-    def check_effect_scope(self):
-        if self.effect_scope != self.required_scope:
-            raise ValueError(f"{self.operation} requires effect_scope={self.required_scope.value}")
+    def check_context(self):
+        if (self.scene_id is None) != (self.scene_revision is None):
+            raise ValueError("scene_id and scene_revision must be supplied together")
+        if self.effect_scope != EffectScope.READ:
+            if self.scene_id is None or self.idempotency_key is None:
+                raise ValueError("mutation requires scene context and idempotency_key")
         return self
 
 
-class InspectScene(RequestBase):
-    operation: Literal["studio_inspect_scene"] = "studio_inspect_scene"
-    required_scope = EffectScope.READ
+class SceneInspect(RequestBase):
+    operation: Literal["studio_scene_inspect"] = "studio_scene_inspect"
+    effect_scope: Literal[EffectScope.READ]
     query: str | None = None
     limit: int = Field(default=20, ge=1, le=500)
 
 
 class CaptureViewport(RequestBase):
     operation: Literal["studio_capture_viewport"] = "studio_capture_viewport"
-    required_scope = EffectScope.READ
+    effect_scope: Literal[EffectScope.READ]
     max_size: int = Field(default=768, ge=200, le=2000)
 
 
-class CreatePrimitive(RequestBase):
-    operation: Literal["studio_create_primitive"] = "studio_create_primitive"
-    required_scope = EffectScope.SCENE
+class PrimitiveSpec(StrictModel):
+    kind: Literal["primitive"]
     primitive: Literal["cube", "sphere", "cylinder", "cone", "plane"]
-    name: NonEmpty
-    location: Vec3 = (0.0, 0.0, 0.0)
 
 
-class CreateText(RequestBase):
-    operation: Literal["studio_create_text"] = "studio_create_text"
-    required_scope = EffectScope.SCENE
+class TextSpec(StrictModel):
+    kind: Literal["text"]
     text: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+
+
+class CreateObject(RequestBase):
+    operation: Literal["studio_create_object"] = "studio_create_object"
+    effect_scope: Literal[EffectScope.SCENE]
     name: NonEmpty
+    spec: Annotated[Union[PrimitiveSpec, TextSpec], Field(discriminator="kind")]
     location: Vec3 = (0.0, 0.0, 0.0)
 
 
-class TransformObject(RequestBase):
-    operation: Literal["studio_transform_object"] = "studio_transform_object"
-    required_scope = EffectScope.SCENE
+class SetTransform(RequestBase):
+    operation: Literal["studio_set_transform"] = "studio_set_transform"
+    effect_scope: Literal[EffectScope.SCENE]
     object_id: UUID
+    action: Literal["transform", "rename", "duplicate"]
+    name: NonEmpty | None = None
     location: Vec3 | None = None
     rotation_euler: Vec3 | None = None
     scale: Vec3 | None = None
 
     @model_validator(mode="after")
-    def has_change(self):
-        if all(v is None for v in (self.location, self.rotation_euler, self.scale)):
-            raise ValueError("at least one transform field is required")
+    def check_action(self):
+        transforms = (self.location, self.rotation_euler, self.scale)
+        if self.action == "transform" and (all(v is None for v in transforms) or self.name is not None):
+            raise ValueError("transform requires transform fields only")
+        if self.action == "rename" and (self.name is None or any(v is not None for v in transforms)):
+            raise ValueError("rename requires name only")
         return self
 
 
 class ManageCollection(RequestBase):
     operation: Literal["studio_manage_collection"] = "studio_manage_collection"
-    required_scope = EffectScope.SCENE
+    effect_scope: Literal[EffectScope.SCENE]
     action: Literal["create", "move_object", "rename"]
     name: NonEmpty | None = None
     collection_id: UUID | None = None
@@ -159,106 +158,156 @@ class ManageCollection(RequestBase):
 
     @model_validator(mode="after")
     def check_action(self):
-        if self.action == "create" and not self.name:
-            raise ValueError("create requires name")
-        if self.action == "move_object" and not (self.collection_id and self.object_id):
-            raise ValueError("move_object requires collection_id and object_id")
-        if self.action == "rename" and not (self.collection_id and self.name):
-            raise ValueError("rename requires collection_id and name")
+        required = {
+            "create": (self.name is not None and self.collection_id is None and self.object_id is None),
+            "move_object": (self.collection_id is not None and self.object_id is not None and self.name is None),
+            "rename": (self.collection_id is not None and self.name is not None and self.object_id is None),
+        }
+        if not required[self.action]:
+            raise ValueError(f"invalid fields for collection action {self.action}")
         return self
 
 
 class DeleteObject(RequestBase):
     operation: Literal["studio_delete_object"] = "studio_delete_object"
-    required_scope = EffectScope.SCENE
+    effect_scope: Literal[EffectScope.SCENE]
     object_id: UUID
     snapshot_id: UUID
+    confirmation_token: NonEmpty
 
 
-class SetMaterial(RequestBase):
-    operation: Literal["studio_set_material"] = "studio_set_material"
-    required_scope = EffectScope.SCENE
-    object_id: UUID
+class PbrSpec(StrictModel):
+    kind: Literal["pbr"]
     base_color: Color4
-    metallic: float = Field(ge=0, le=1)
-    roughness: float = Field(ge=0, le=1)
+    metallic: Channel
+    roughness: Channel
+    texture_uri: Uri | None = None
+    texture_sha256: Sha256 | None = None
 
-    @field_validator("base_color")
-    @classmethod
-    def valid_color(cls, value: Color4) -> Color4:
-        if any(channel < 0 or channel > 1 for channel in value):
-            raise ValueError("color channels must be in [0, 1]")
-        return value
+    @model_validator(mode="after")
+    def texture_pair(self):
+        if (self.texture_uri is None) != (self.texture_sha256 is None):
+            raise ValueError("texture URI and SHA-256 must be supplied together")
+        return self
+
+
+class BevelSpec(StrictModel):
+    kind: Literal["bevel"]
+    width: float = Field(gt=0, le=10)
+    segments: int = Field(ge=1, le=16)
+
+
+class SubdivisionSpec(StrictModel):
+    kind: Literal["subdivision"]
+    levels: int = Field(ge=1, le=3)
+
+
+class GeometryPresetSpec(StrictModel):
+    kind: Literal["geometry_nodes"]
+    preset: Literal["linear_array"]
+    count: int = Field(ge=1, le=100)
+    offset: Vec3
+
+
+class AssignMaterial(RequestBase):
+    operation: Literal["studio_assign_material"] = "studio_assign_material"
+    effect_scope: Literal[EffectScope.SCENE]
+    object_id: UUID
+    spec: Annotated[
+        Union[PbrSpec, BevelSpec, SubdivisionSpec, GeometryPresetSpec],
+        Field(discriminator="kind"),
+    ]
 
 
 class SetCamera(RequestBase):
     operation: Literal["studio_set_camera"] = "studio_set_camera"
-    required_scope = EffectScope.SCENE
+    effect_scope: Literal[EffectScope.SCENE]
     camera_id: UUID | None = None
     location: Vec3
     rotation_euler: Vec3
     lens_mm: float = Field(default=50, gt=0, le=1000)
 
 
-class SetLight(RequestBase):
-    operation: Literal["studio_set_light"] = "studio_set_light"
-    required_scope = EffectScope.SCENE
+class LightSpec(StrictModel):
+    kind: Literal["light"]
     light_id: UUID | None = None
     light_type: Literal["POINT", "SUN", "SPOT", "AREA"]
     energy: float = Field(ge=0)
-    color: Vec3
+    color: Color3
     location: Vec3
 
-    @field_validator("color")
-    @classmethod
-    def valid_color(cls, value: Vec3) -> Vec3:
-        if any(channel < 0 or channel > 1 for channel in value):
-            raise ValueError("color channels must be in [0, 1]")
-        return value
+
+class WorldSpec(StrictModel):
+    kind: Literal["world"]
+    color: Color3
+    strength: float = Field(ge=0, le=100)
 
 
-class SaveScene(RequestBase):
-    operation: Literal["studio_save_scene"] = "studio_save_scene"
-    required_scope = EffectScope.FILE
-    output_uri: NonEmpty
+class SetLight(RequestBase):
+    operation: Literal["studio_set_light"] = "studio_set_light"
+    effect_scope: Literal[EffectScope.SCENE]
+    spec: Annotated[Union[LightSpec, WorldSpec], Field(discriminator="kind")]
+
+
+class SceneSave(RequestBase):
+    operation: Literal["studio_scene_save"] = "studio_scene_save"
+    effect_scope: Literal[EffectScope.FILE]
+    output_uri: Uri
     overwrite: bool = False
+    confirmation_token: NonEmpty | None = None
+
+    @model_validator(mode="after")
+    def overwrite_confirmation(self):
+        if self.overwrite and self.confirmation_token is None:
+            raise ValueError("overwrite requires confirmation_token")
+        return self
 
 
-class OpenScene(RequestBase):
-    operation: Literal["studio_open_scene"] = "studio_open_scene"
-    required_scope = EffectScope.FILE
-    input_uri: NonEmpty
+class SceneOpen(RequestBase):
+    operation: Literal["studio_scene_open"] = "studio_scene_open"
+    effect_scope: Literal[EffectScope.FILE]
+    input_uri: Uri
     expected_sha256: Sha256
+    snapshot_id: UUID
+    confirmation_token: NonEmpty
 
 
-class SnapshotScene(RequestBase):
-    operation: Literal["studio_snapshot_scene"] = "studio_snapshot_scene"
-    required_scope = EffectScope.FILE
+class SceneSnapshot(RequestBase):
+    operation: Literal["studio_scene_snapshot"] = "studio_scene_snapshot"
+    effect_scope: Literal[EffectScope.FILE]
     label: NonEmpty | None = None
+
+
+class SceneRestore(RequestBase):
+    operation: Literal["studio_scene_restore"] = "studio_scene_restore"
+    effect_scope: Literal[EffectScope.FILE]
+    snapshot_id: UUID
+    confirmation_token: NonEmpty
 
 
 class RenderStill(RequestBase):
     operation: Literal["studio_render_still"] = "studio_render_still"
-    required_scope = EffectScope.FILE
+    effect_scope: Literal[EffectScope.FILE]
     width: int = Field(ge=1, le=16384)
     height: int = Field(ge=1, le=16384)
     samples: int = Field(ge=1, le=65536)
-    output_uri: NonEmpty
+    output_uri: Uri
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
 
 
-class ExportGlb(RequestBase):
-    operation: Literal["studio_export_glb"] = "studio_export_glb"
-    required_scope = EffectScope.FILE
-    output_uri: NonEmpty
+class ExportArtifacts(RequestBase):
+    operation: Literal["studio_export_artifacts"] = "studio_export_artifacts"
+    effect_scope: Literal[EffectScope.FILE]
+    output_uri: Uri
+    formats: set[Literal["glb", "blend"]] = Field(min_length=1)
     object_ids: list[UUID] = Field(min_length=1)
 
 
 StudioRequest = Annotated[
     Union[
-        InspectScene, CaptureViewport, CreatePrimitive, CreateText, TransformObject,
-        ManageCollection, DeleteObject, SetMaterial, SetCamera, SetLight,
-        SaveScene, OpenScene, SnapshotScene, RenderStill, ExportGlb,
+        SceneInspect, SceneSave, SceneOpen, SceneSnapshot, SceneRestore,
+        CreateObject, SetTransform, DeleteObject, ManageCollection, AssignMaterial,
+        SetCamera, SetLight, CaptureViewport, RenderStill, ExportArtifacts,
     ],
     Field(discriminator="operation"),
 ]
@@ -266,24 +315,46 @@ _request_adapter = TypeAdapter(StudioRequest)
 
 
 def validate_request(data: dict) -> StudioRequest:
-    """Validate a v1 request, including its operation-specific fields."""
+    """Validate JSON-compatible request data, including operation-specific types."""
     return _request_adapter.validate_json(json.dumps(data))
+
+
+def ensure_supported(request: StudioRequest, capabilities: Capabilities) -> None:
+    if request.operation not in capabilities.operations:
+        raise ValueError(ErrorCode.CAPABILITY_UNAVAILABLE.value)
+
+
+class SceneDiff(StrictModel):
+    created: list[UUID] = Field(default_factory=list)
+    updated: list[UUID] = Field(default_factory=list)
+    deleted: list[UUID] = Field(default_factory=list)
 
 
 class ResultPayload(StrictModel):
     objects: list[ObjectRef] = Field(default_factory=list)
     artifact_ids: list[UUID] = Field(default_factory=list)
+    snapshot_id: UUID | None = None
+    scene_diff: SceneDiff = Field(default_factory=SceneDiff)
     summary: str | None = None
+
+
+class StudioError(StrictModel):
+    code: ErrorCode
+    message: NonEmpty
+    retryable: bool = False
+    details: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class StudioResponse(StrictModel):
     contract: ContractVersion = Field(default_factory=ContractVersion)
     request_id: UUID
+    scene_id: UUID
     scene_revision: int = Field(ge=0)
     status: Literal["succeeded", "accepted", "failed"]
     result: ResultPayload | None = None
     job_id: UUID | None = None
     error: StudioError | None = None
+    warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_variant(self):
@@ -296,13 +367,6 @@ class StudioResponse(StrictModel):
         return self
 
 
-class StudioError(StrictModel):
-    code: ErrorCode
-    message: NonEmpty
-    retryable: bool = False
-    details: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
-
-
 class JobState(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -311,29 +375,42 @@ class JobState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class Recovery(StrictModel):
+    reason: Literal["lease_expired", "worker_restart"]
+    replay_safe: Literal[True]
+    checkpoint_uri: Uri | None = None
+
+
 class Job(StrictModel):
     contract: ContractVersion = Field(default_factory=ContractVersion)
     job_id: UUID
     request_id: UUID
+    owner_id: NonEmpty
     idempotency_key: NonEmpty
+    payload_sha256: Sha256
     operation: NonEmpty
+    scene_id: UUID
+    scene_revision: int = Field(ge=0)
     state: JobState
     progress: float = Field(ge=0, le=1)
     cancel_requested: bool = False
+    stop_confirmed: bool = False
     attempt: int = Field(default=1, ge=1)
     timeout_seconds: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
     lease_expires_at: datetime | None = None
+    recovery: Recovery | None = None
     error: StudioError | None = None
     artifact_ids: list[UUID] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_state(self):
-        if self.created_at.tzinfo is None or self.updated_at.tzinfo is None:
+        times = [self.created_at, self.updated_at]
+        if self.lease_expires_at is not None:
+            times.append(self.lease_expires_at)
+        if any(value.utcoffset() is None for value in times):
             raise ValueError("job timestamps must include timezone")
-        if self.lease_expires_at is not None and self.lease_expires_at.tzinfo is None:
-            raise ValueError("lease timestamp must include timezone")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at precedes created_at")
         if self.state == JobState.QUEUED and self.lease_expires_at is not None:
@@ -348,8 +425,12 @@ class Job(StrictModel):
             raise ValueError("succeeded requires progress=1 and no error")
         if self.state == JobState.FAILED and self.error is None:
             raise ValueError("failed requires error")
-        if self.state == JobState.CANCELLED and not self.cancel_requested:
-            raise ValueError("cancelled requires acknowledged cancel request")
+        if self.state == JobState.CANCELLED and not (self.cancel_requested and self.stop_confirmed):
+            raise ValueError("cancelled requires cancel request and confirmed stop")
+        if self.stop_confirmed and self.state != JobState.CANCELLED:
+            raise ValueError("stop_confirmed is only valid for cancelled jobs")
+        if self.state in (JobState.QUEUED, JobState.RUNNING) and self.error is not None:
+            raise ValueError("nonterminal job cannot carry a terminal error")
         if self.state in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED) and self.lease_expires_at:
             raise ValueError("terminal job cannot retain a lease")
         return self
@@ -362,49 +443,63 @@ ALLOWED_TRANSITIONS: dict[JobState, set[JobState]] = {
     JobState.FAILED: set(),
     JobState.CANCELLED: set(),
 }
+_IMMUTABLE_JOB_FIELDS = (
+    "contract", "job_id", "request_id", "owner_id", "idempotency_key", "payload_sha256",
+    "operation", "scene_id", "scene_revision", "timeout_seconds", "created_at",
+)
 
 
 def validate_transition(previous: Job, current: Job) -> None:
-    """Reject impossible durable updates; a cancel request alone does not transition."""
+    """Validate persisted updates; the runner verifies stop/replay facts first."""
     Job.model_validate(previous.model_dump())
     Job.model_validate(current.model_dump())
     if previous.state in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED):
         if current != previous:
             raise ValueError("terminal job is immutable")
         return
-    if (previous.job_id, previous.request_id, previous.idempotency_key) != (
-        current.job_id, current.request_id, current.idempotency_key
-    ):
-        raise ValueError("job identity changed")
+    if any(getattr(previous, field) != getattr(current, field) for field in _IMMUTABLE_JOB_FIELDS):
+        raise ValueError("job identity or immutable input changed")
     if current.updated_at < previous.updated_at or current.progress < previous.progress:
         raise ValueError("job time or progress moved backwards")
     if previous.cancel_requested and not current.cancel_requested:
         raise ValueError("cancel request cannot be withdrawn")
     if current.state != previous.state and current.state not in ALLOWED_TRANSITIONS[previous.state]:
         raise ValueError(f"invalid transition {previous.state.value} -> {current.state.value}")
-    if current.state == JobState.CANCELLED and not current.cancel_requested:
-        raise ValueError("cancelled requires acknowledged cancel request")
-    if current.attempt < previous.attempt or current.attempt > previous.attempt + 1:
-        raise ValueError("invalid attempt increment")
-    if current.state == JobState.QUEUED and previous.state == JobState.RUNNING:
-        if current.attempt != previous.attempt + 1:
-            raise ValueError("recovery requeue must increment attempt")
+    recovering = previous.state == JobState.RUNNING and current.state == JobState.QUEUED
+    if recovering:
+        if current.attempt != previous.attempt + 1 or current.recovery is None:
+            raise ValueError("recovery requeue requires attempt+1 and replay evidence")
+        if current.cancel_requested:
+            raise ValueError("cannot requeue while cancellation is pending")
+        if current.recovery.reason == "lease_expired" and current.updated_at < previous.lease_expires_at:
+            raise ValueError("cannot recover before lease expiry")
+    elif current.attempt != previous.attempt or current.recovery != previous.recovery:
+        raise ValueError("attempt and recovery only change during recovery requeue")
 
 
 class Provenance(StrictModel):
-    source_commit: GitCommit | None = None
+    source_commit: GitCommit
+    scene_id: UUID
+    scene_revision: int = Field(ge=0)
     blender_version: NonEmpty
     worker_version: NonEmpty
     input_sha256: list[Sha256] = Field(default_factory=list)
-    model_id: str | None = None
-    model_license: str | None = None
+    model_id: NonEmpty | None = None
+    model_license: NonEmpty | None = None
+    asset_licenses: list[NonEmpty] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def model_license_pair(self):
+        if (self.model_id is None) != (self.model_license is None):
+            raise ValueError("model ID and license must be supplied together")
+        return self
 
 
 class Artifact(StrictModel):
     artifact_id: UUID
     job_id: UUID
     kind: Literal["blend", "glb", "png", "mp4", "manifest", "other"]
-    uri: NonEmpty
+    uri: Uri
     bytes: int = Field(gt=0)
     sha256: Sha256
     version: int = Field(ge=1)
@@ -419,6 +514,8 @@ class ArtifactManifest(StrictModel):
 
     @model_validator(mode="after")
     def same_job(self):
+        if self.created_at.utcoffset() is None:
+            raise ValueError("manifest timestamp must include timezone")
         if any(item.job_id != self.job_id for item in self.artifacts):
             raise ValueError("artifact job_id does not match manifest")
         if len({item.artifact_id for item in self.artifacts}) != len(self.artifacts):

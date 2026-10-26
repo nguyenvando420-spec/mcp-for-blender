@@ -1,5 +1,137 @@
 {
   "$defs": {
+    "AssignMaterial": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_assign_material",
+          "default": "studio_assign_material",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        },
+        "spec": {
+          "discriminator": {
+            "mapping": {
+              "bevel": "#/$defs/BevelSpec",
+              "geometry_nodes": "#/$defs/GeometryPresetSpec",
+              "pbr": "#/$defs/PbrSpec",
+              "subdivision": "#/$defs/SubdivisionSpec"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PbrSpec"
+            },
+            {
+              "$ref": "#/$defs/BevelSpec"
+            },
+            {
+              "$ref": "#/$defs/SubdivisionSpec"
+            },
+            {
+              "$ref": "#/$defs/GeometryPresetSpec"
+            }
+          ],
+          "title": "Spec"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope",
+        "object_id",
+        "spec"
+      ],
+      "title": "AssignMaterial",
+      "type": "object"
+    },
+    "BevelSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "bevel",
+          "title": "Kind",
+          "type": "string"
+        },
+        "segments": {
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Segments",
+          "type": "integer"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "title": "Width",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "width",
+        "segments"
+      ],
+      "title": "BevelSpec",
+      "type": "object"
+    },
     "CaptureViewport": {
       "additionalProperties": false,
       "properties": {
@@ -7,7 +139,23 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "read",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "max_size": {
           "default": 768,
@@ -27,15 +175,35 @@
           "title": "Request Id",
           "type": "string"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope"
       ],
       "title": "CaptureViewport",
@@ -60,14 +228,30 @@
       "title": "ContractVersion",
       "type": "object"
     },
-    "CreatePrimitive": {
+    "CreateObject": {
       "additionalProperties": false,
       "properties": {
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "location": {
           "default": [
@@ -98,20 +282,9 @@
           "type": "string"
         },
         "operation": {
-          "const": "studio_create_primitive",
-          "default": "studio_create_primitive",
+          "const": "studio_create_object",
+          "default": "studio_create_object",
           "title": "Operation",
-          "type": "string"
-        },
-        "primitive": {
-          "enum": [
-            "cube",
-            "sphere",
-            "cylinder",
-            "cone",
-            "plane"
-          ],
-          "title": "Primitive",
           "type": "string"
         },
         "request_id": {
@@ -119,100 +292,90 @@
           "title": "Request Id",
           "type": "string"
         },
-        "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope",
-        "primitive",
-        "name"
-      ],
-      "title": "CreatePrimitive",
-      "type": "object"
-    },
-    "CreateText": {
-      "additionalProperties": false,
-      "properties": {
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
-        },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "location": {
-          "default": [
-            0.0,
-            0.0,
-            0.0
-          ],
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
+        "scene_id": {
+          "anyOf": [
             {
-              "type": "number"
+              "format": "uuid",
+              "type": "string"
             },
             {
-              "type": "number"
-            },
-            {
-              "type": "number"
+              "type": "null"
             }
           ],
-          "title": "Location",
-          "type": "array"
-        },
-        "name": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Name",
-          "type": "string"
-        },
-        "operation": {
-          "const": "studio_create_text",
-          "default": "studio_create_text",
-          "title": "Operation",
-          "type": "string"
-        },
-        "request_id": {
-          "format": "uuid",
-          "title": "Request Id",
-          "type": "string"
+          "default": null,
+          "title": "Scene Id"
         },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         },
-        "text": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Text",
-          "type": "string"
+        "spec": {
+          "discriminator": {
+            "mapping": {
+              "primitive": "#/$defs/PrimitiveSpec",
+              "text": "#/$defs/TextSpec"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PrimitiveSpec"
+            },
+            {
+              "$ref": "#/$defs/TextSpec"
+            }
+          ],
+          "title": "Spec"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
-        "text",
-        "name"
+        "name",
+        "spec"
       ],
-      "title": "CreateText",
+      "title": "CreateObject",
       "type": "object"
     },
     "DeleteObject": {
       "additionalProperties": false,
       "properties": {
+        "confirmation_token": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Confirmation Token",
+          "type": "string"
+        },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "object_id": {
           "format": "uuid",
@@ -230,10 +393,31 @@
           "title": "Request Id",
           "type": "string"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         },
         "snapshot_id": {
           "format": "uuid",
@@ -243,32 +427,51 @@
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
         "object_id",
-        "snapshot_id"
+        "snapshot_id",
+        "confirmation_token"
       ],
       "title": "DeleteObject",
       "type": "object"
     },
-    "EffectScope": {
-      "enum": [
-        "read",
-        "scene",
-        "file",
-        "external"
-      ],
-      "title": "EffectScope",
-      "type": "string"
-    },
-    "ExportGlb": {
+    "ExportArtifacts": {
       "additionalProperties": false,
       "properties": {
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "formats": {
+          "items": {
+            "enum": [
+              "glb",
+              "blend"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Formats",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "object_ids": {
           "items": {
@@ -280,14 +483,15 @@
           "type": "array"
         },
         "operation": {
-          "const": "studio_export_glb",
-          "default": "studio_export_glb",
+          "const": "studio_export_artifacts",
+          "default": "studio_export_artifacts",
           "title": "Operation",
           "type": "string"
         },
         "output_uri": {
-          "maxLength": 256,
+          "maxLength": 4096,
           "minLength": 1,
+          "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Output Uri",
           "type": "string"
         },
@@ -296,47 +500,10 @@
           "title": "Request Id",
           "type": "string"
         },
-        "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope",
-        "output_uri",
-        "object_ids"
-      ],
-      "title": "ExportGlb",
-      "type": "object"
-    },
-    "InspectScene": {
-      "additionalProperties": false,
-      "properties": {
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
-        },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "limit": {
-          "default": 20,
-          "maximum": 500,
-          "minimum": 1,
-          "title": "Limit",
-          "type": "integer"
-        },
-        "operation": {
-          "const": "studio_inspect_scene",
-          "default": "studio_inspect_scene",
-          "title": "Operation",
-          "type": "string"
-        },
-        "query": {
+        "scene_id": {
           "anyOf": [
             {
+              "format": "uuid",
               "type": "string"
             },
             {
@@ -344,25 +511,163 @@
             }
           ],
           "default": null,
-          "title": "Query"
-        },
-        "request_id": {
-          "format": "uuid",
-          "title": "Request Id",
-          "type": "string"
+          "title": "Scene Id"
         },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
-        "effect_scope"
+        "effect_scope",
+        "output_uri",
+        "formats",
+        "object_ids"
       ],
-      "title": "InspectScene",
+      "title": "ExportArtifacts",
+      "type": "object"
+    },
+    "GeometryPresetSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "geometry_nodes",
+          "title": "Kind",
+          "type": "string"
+        },
+        "offset": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Offset",
+          "type": "array"
+        },
+        "preset": {
+          "const": "linear_array",
+          "title": "Preset",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "preset",
+        "count",
+        "offset"
+      ],
+      "title": "GeometryPresetSpec",
+      "type": "object"
+    },
+    "LightSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Color",
+          "type": "array"
+        },
+        "energy": {
+          "minimum": 0,
+          "title": "Energy",
+          "type": "number"
+        },
+        "kind": {
+          "const": "light",
+          "title": "Kind",
+          "type": "string"
+        },
+        "light_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Light Id"
+        },
+        "light_type": {
+          "enum": [
+            "POINT",
+            "SUN",
+            "SPOT",
+            "AREA"
+          ],
+          "title": "Light Type",
+          "type": "string"
+        },
+        "location": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Location",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "light_type",
+        "energy",
+        "color",
+        "location"
+      ],
+      "title": "LightSpec",
       "type": "object"
     },
     "ManageCollection": {
@@ -394,7 +699,23 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "name": {
           "anyOf": [
@@ -434,66 +755,152 @@
           "title": "Request Id",
           "type": "string"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
         "action"
       ],
       "title": "ManageCollection",
       "type": "object"
     },
-    "OpenScene": {
+    "PbrSpec": {
       "additionalProperties": false,
       "properties": {
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
+        "base_color": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Base Color",
+          "type": "array"
         },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "expected_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Expected Sha256",
+        "kind": {
+          "const": "pbr",
+          "title": "Kind",
           "type": "string"
         },
-        "input_uri": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Input Uri",
-          "type": "string"
-        },
-        "operation": {
-          "const": "studio_open_scene",
-          "default": "studio_open_scene",
-          "title": "Operation",
-          "type": "string"
-        },
-        "request_id": {
-          "format": "uuid",
-          "title": "Request Id",
-          "type": "string"
-        },
-        "scene_revision": {
+        "metallic": {
+          "maximum": 1,
           "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "title": "Metallic",
+          "type": "number"
+        },
+        "roughness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Roughness",
+          "type": "number"
+        },
+        "texture_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Texture Sha256"
+        },
+        "texture_uri": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Texture Uri"
         }
       },
       "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope",
-        "input_uri",
-        "expected_sha256"
+        "kind",
+        "base_color",
+        "metallic",
+        "roughness"
       ],
-      "title": "OpenScene",
+      "title": "PbrSpec",
+      "type": "object"
+    },
+    "PrimitiveSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "primitive",
+          "title": "Kind",
+          "type": "string"
+        },
+        "primitive": {
+          "enum": [
+            "cube",
+            "sphere",
+            "cylinder",
+            "cone",
+            "plane"
+          ],
+          "title": "Primitive",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "primitive"
+      ],
+      "title": "PrimitiveSpec",
       "type": "object"
     },
     "RenderStill": {
@@ -503,13 +910,29 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
         },
         "height": {
           "maximum": 16384,
           "minimum": 1,
           "title": "Height",
           "type": "integer"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "operation": {
           "const": "studio_render_still",
@@ -518,8 +941,9 @@
           "type": "string"
         },
         "output_uri": {
-          "maxLength": 256,
+          "maxLength": 4096,
           "minLength": 1,
+          "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Output Uri",
           "type": "string"
         },
@@ -534,10 +958,31 @@
           "title": "Samples",
           "type": "integer"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         },
         "timeout_seconds": {
           "default": 600,
@@ -555,7 +1000,6 @@
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
         "width",
         "height",
@@ -565,24 +1009,324 @@
       "title": "RenderStill",
       "type": "object"
     },
-    "SaveScene": {
+    "SceneInspect": {
       "additionalProperties": false,
       "properties": {
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "read",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
         },
         "operation": {
-          "const": "studio_save_scene",
-          "default": "studio_save_scene",
+          "const": "studio_scene_inspect",
+          "default": "studio_scene_inspect",
+          "title": "Operation",
+          "type": "string"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope"
+      ],
+      "title": "SceneInspect",
+      "type": "object"
+    },
+    "SceneOpen": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Confirmation Token",
+          "type": "string"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "expected_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Expected Sha256",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "input_uri": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
+          "title": "Input Uri",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_scene_open",
+          "default": "studio_scene_open",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope",
+        "input_uri",
+        "expected_sha256",
+        "snapshot_id",
+        "confirmation_token"
+      ],
+      "title": "SceneOpen",
+      "type": "object"
+    },
+    "SceneRestore": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Confirmation Token",
+          "type": "string"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "operation": {
+          "const": "studio_scene_restore",
+          "default": "studio_scene_restore",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope",
+        "snapshot_id",
+        "confirmation_token"
+      ],
+      "title": "SceneRestore",
+      "type": "object"
+    },
+    "SceneSave": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Token"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "operation": {
+          "const": "studio_scene_save",
+          "default": "studio_scene_save",
           "title": "Operation",
           "type": "string"
         },
         "output_uri": {
-          "maxLength": 256,
+          "maxLength": 4096,
           "minLength": 1,
+          "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Output Uri",
           "type": "string"
         },
@@ -596,19 +1340,123 @@
           "title": "Request Id",
           "type": "string"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
         "output_uri"
       ],
-      "title": "SaveScene",
+      "title": "SceneSave",
+      "type": "object"
+    },
+    "SceneSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "file",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "operation": {
+          "const": "studio_scene_snapshot",
+          "default": "studio_scene_snapshot",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "scene_revision": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope"
+      ],
+      "title": "SceneSnapshot",
       "type": "object"
     },
     "SetCamera": {
@@ -631,7 +1479,23 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "lens_mm": {
           "default": 50,
@@ -685,54 +1549,7 @@
           "title": "Rotation Euler",
           "type": "array"
         },
-        "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope",
-        "location",
-        "rotation_euler"
-      ],
-      "title": "SetCamera",
-      "type": "object"
-    },
-    "SetLight": {
-      "additionalProperties": false,
-      "properties": {
-        "color": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "title": "Color",
-          "type": "array"
-        },
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
-        },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "energy": {
-          "minimum": 0,
-          "title": "Energy",
-          "type": "number"
-        },
-        "light_id": {
+        "scene_id": {
           "anyOf": [
             {
               "format": "uuid",
@@ -743,34 +1560,55 @@
             }
           ],
           "default": null,
-          "title": "Light Id"
+          "title": "Scene Id"
         },
-        "light_type": {
-          "enum": [
-            "POINT",
-            "SUN",
-            "SPOT",
-            "AREA"
-          ],
-          "title": "Light Type",
-          "type": "string"
-        },
-        "location": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
+        "scene_revision": {
+          "anyOf": [
             {
-              "type": "number"
+              "minimum": 0,
+              "type": "integer"
             },
             {
-              "type": "number"
-            },
-            {
-              "type": "number"
+              "type": "null"
             }
           ],
-          "title": "Location",
-          "type": "array"
+          "default": null,
+          "title": "Scene Revision"
+        }
+      },
+      "required": [
+        "request_id",
+        "effect_scope",
+        "location",
+        "rotation_euler"
+      ],
+      "title": "SetCamera",
+      "type": "object"
+    },
+    "SetLight": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "const": "scene",
+          "title": "Effect Scope",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "operation": {
           "const": "studio_set_light",
@@ -783,109 +1621,80 @@
           "title": "Request Id",
           "type": "string"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
+        },
+        "spec": {
+          "discriminator": {
+            "mapping": {
+              "light": "#/$defs/LightSpec",
+              "world": "#/$defs/WorldSpec"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LightSpec"
+            },
+            {
+              "$ref": "#/$defs/WorldSpec"
+            }
+          ],
+          "title": "Spec"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
-        "light_type",
-        "energy",
-        "color",
-        "location"
+        "spec"
       ],
       "title": "SetLight",
       "type": "object"
     },
-    "SetMaterial": {
+    "SetTransform": {
       "additionalProperties": false,
       "properties": {
-        "base_color": {
-          "maxItems": 4,
-          "minItems": 4,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
+        "action": {
+          "enum": [
+            "transform",
+            "rename",
+            "duplicate"
           ],
-          "title": "Base Color",
-          "type": "array"
+          "title": "Action",
+          "type": "string"
         },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "metallic": {
-          "maximum": 1,
-          "minimum": 0,
-          "title": "Metallic",
-          "type": "number"
-        },
-        "object_id": {
-          "format": "uuid",
-          "title": "Object Id",
+          "const": "scene",
+          "title": "Effect Scope",
           "type": "string"
         },
-        "operation": {
-          "const": "studio_set_material",
-          "default": "studio_set_material",
-          "title": "Operation",
-          "type": "string"
-        },
-        "request_id": {
-          "format": "uuid",
-          "title": "Request Id",
-          "type": "string"
-        },
-        "roughness": {
-          "maximum": 1,
-          "minimum": 0,
-          "title": "Roughness",
-          "type": "number"
-        },
-        "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope",
-        "object_id",
-        "base_color",
-        "metallic",
-        "roughness"
-      ],
-      "title": "SetMaterial",
-      "type": "object"
-    },
-    "SnapshotScene": {
-      "additionalProperties": false,
-      "properties": {
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
-        },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
-        },
-        "label": {
+        "idempotency_key": {
           "anyOf": [
             {
               "maxLength": 256,
@@ -897,41 +1706,7 @@
             }
           ],
           "default": null,
-          "title": "Label"
-        },
-        "operation": {
-          "const": "studio_snapshot_scene",
-          "default": "studio_snapshot_scene",
-          "title": "Operation",
-          "type": "string"
-        },
-        "request_id": {
-          "format": "uuid",
-          "title": "Request Id",
-          "type": "string"
-        },
-        "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "request_id",
-        "scene_revision",
-        "effect_scope"
-      ],
-      "title": "SnapshotScene",
-      "type": "object"
-    },
-    "TransformObject": {
-      "additionalProperties": false,
-      "properties": {
-        "contract": {
-          "$ref": "#/$defs/ContractVersion"
-        },
-        "effect_scope": {
-          "$ref": "#/$defs/EffectScope"
+          "title": "Idempotency Key"
         },
         "location": {
           "anyOf": [
@@ -958,14 +1733,28 @@
           "default": null,
           "title": "Location"
         },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
         "object_id": {
           "format": "uuid",
           "title": "Object Id",
           "type": "string"
         },
         "operation": {
-          "const": "studio_transform_object",
-          "default": "studio_transform_object",
+          "const": "studio_set_transform",
+          "default": "studio_set_transform",
           "title": "Operation",
           "type": "string"
         },
@@ -1024,66 +1813,183 @@
           "default": null,
           "title": "Scale"
         },
+        "scene_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
         "scene_revision": {
-          "minimum": 0,
-          "title": "Scene Revision",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Revision"
         }
       },
       "required": [
         "request_id",
-        "scene_revision",
         "effect_scope",
-        "object_id"
+        "object_id",
+        "action"
       ],
-      "title": "TransformObject",
+      "title": "SetTransform",
+      "type": "object"
+    },
+    "SubdivisionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "subdivision",
+          "title": "Kind",
+          "type": "string"
+        },
+        "levels": {
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Levels",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "levels"
+      ],
+      "title": "SubdivisionSpec",
+      "type": "object"
+    },
+    "TextSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "text",
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "title": "TextSpec",
+      "type": "object"
+    },
+    "WorldSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          ],
+          "title": "Color",
+          "type": "array"
+        },
+        "kind": {
+          "const": "world",
+          "title": "Kind",
+          "type": "string"
+        },
+        "strength": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Strength",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "color",
+        "strength"
+      ],
+      "title": "WorldSpec",
       "type": "object"
     }
   },
   "discriminator": {
     "mapping": {
+      "studio_assign_material": "#/$defs/AssignMaterial",
       "studio_capture_viewport": "#/$defs/CaptureViewport",
-      "studio_create_primitive": "#/$defs/CreatePrimitive",
-      "studio_create_text": "#/$defs/CreateText",
+      "studio_create_object": "#/$defs/CreateObject",
       "studio_delete_object": "#/$defs/DeleteObject",
-      "studio_export_glb": "#/$defs/ExportGlb",
-      "studio_inspect_scene": "#/$defs/InspectScene",
+      "studio_export_artifacts": "#/$defs/ExportArtifacts",
       "studio_manage_collection": "#/$defs/ManageCollection",
-      "studio_open_scene": "#/$defs/OpenScene",
       "studio_render_still": "#/$defs/RenderStill",
-      "studio_save_scene": "#/$defs/SaveScene",
+      "studio_scene_inspect": "#/$defs/SceneInspect",
+      "studio_scene_open": "#/$defs/SceneOpen",
+      "studio_scene_restore": "#/$defs/SceneRestore",
+      "studio_scene_save": "#/$defs/SceneSave",
+      "studio_scene_snapshot": "#/$defs/SceneSnapshot",
       "studio_set_camera": "#/$defs/SetCamera",
       "studio_set_light": "#/$defs/SetLight",
-      "studio_set_material": "#/$defs/SetMaterial",
-      "studio_snapshot_scene": "#/$defs/SnapshotScene",
-      "studio_transform_object": "#/$defs/TransformObject"
+      "studio_set_transform": "#/$defs/SetTransform"
     },
     "propertyName": "operation"
   },
   "oneOf": [
     {
-      "$ref": "#/$defs/InspectScene"
+      "$ref": "#/$defs/SceneInspect"
     },
     {
-      "$ref": "#/$defs/CaptureViewport"
+      "$ref": "#/$defs/SceneSave"
     },
     {
-      "$ref": "#/$defs/CreatePrimitive"
+      "$ref": "#/$defs/SceneOpen"
     },
     {
-      "$ref": "#/$defs/CreateText"
+      "$ref": "#/$defs/SceneSnapshot"
     },
     {
-      "$ref": "#/$defs/TransformObject"
+      "$ref": "#/$defs/SceneRestore"
     },
     {
-      "$ref": "#/$defs/ManageCollection"
+      "$ref": "#/$defs/CreateObject"
+    },
+    {
+      "$ref": "#/$defs/SetTransform"
     },
     {
       "$ref": "#/$defs/DeleteObject"
     },
     {
-      "$ref": "#/$defs/SetMaterial"
+      "$ref": "#/$defs/ManageCollection"
+    },
+    {
+      "$ref": "#/$defs/AssignMaterial"
     },
     {
       "$ref": "#/$defs/SetCamera"
@@ -1092,19 +1998,13 @@
       "$ref": "#/$defs/SetLight"
     },
     {
-      "$ref": "#/$defs/SaveScene"
-    },
-    {
-      "$ref": "#/$defs/OpenScene"
-    },
-    {
-      "$ref": "#/$defs/SnapshotScene"
+      "$ref": "#/$defs/CaptureViewport"
     },
     {
       "$ref": "#/$defs/RenderStill"
     },
     {
-      "$ref": "#/$defs/ExportGlb"
+      "$ref": "#/$defs/ExportArtifacts"
     }
   ]
 }

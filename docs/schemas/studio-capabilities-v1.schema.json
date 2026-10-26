@@ -32,6 +32,8 @@
     },
     "features": {
       "items": {
+        "maxLength": 256,
+        "minLength": 1,
         "type": "string"
       },
       "title": "Features",
@@ -40,6 +42,8 @@
     },
     "operations": {
       "items": {
+        "maxLength": 256,
+        "minLength": 1,
         "type": "string"
       },
       "title": "Operations",

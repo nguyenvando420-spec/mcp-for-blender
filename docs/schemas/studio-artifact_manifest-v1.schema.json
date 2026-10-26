@@ -39,8 +39,9 @@
           "type": "string"
         },
         "uri": {
-          "maxLength": 256,
+          "maxLength": 4096,
           "minLength": 1,
+          "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Uri",
           "type": "string"
         },
@@ -85,6 +86,15 @@
     "Provenance": {
       "additionalProperties": false,
       "properties": {
+        "asset_licenses": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Asset Licenses",
+          "type": "array"
+        },
         "blender_version": {
           "maxLength": 256,
           "minLength": 1,
@@ -102,6 +112,8 @@
         "model_id": {
           "anyOf": [
             {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -114,6 +126,8 @@
         "model_license": {
           "anyOf": [
             {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -123,18 +137,20 @@
           "default": null,
           "title": "Model License"
         },
+        "scene_id": {
+          "format": "uuid",
+          "title": "Scene Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        },
         "source_commit": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{40}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Commit"
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+          "title": "Source Commit",
+          "type": "string"
         },
         "worker_version": {
           "maxLength": 256,
@@ -144,6 +160,9 @@
         }
       },
       "required": [
+        "source_commit",
+        "scene_id",
+        "scene_revision",
         "blender_version",
         "worker_version"
       ],

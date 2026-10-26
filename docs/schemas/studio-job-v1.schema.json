@@ -47,6 +47,45 @@
       "title": "JobState",
       "type": "string"
     },
+    "Recovery": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint_uri": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint Uri"
+        },
+        "reason": {
+          "enum": [
+            "lease_expired",
+            "worker_restart"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "replay_safe": {
+          "const": true,
+          "title": "Replay Safe",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason",
+        "replay_safe"
+      ],
+      "title": "Recovery",
+      "type": "object"
+    },
     "StudioError": {
       "additionalProperties": false,
       "properties": {
@@ -166,19 +205,56 @@
       "title": "Operation",
       "type": "string"
     },
+    "owner_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Owner Id",
+      "type": "string"
+    },
+    "payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Sha256",
+      "type": "string"
+    },
     "progress": {
       "maximum": 1,
       "minimum": 0,
       "title": "Progress",
       "type": "number"
     },
+    "recovery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Recovery"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "request_id": {
       "format": "uuid",
       "title": "Request Id",
       "type": "string"
     },
+    "scene_id": {
+      "format": "uuid",
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "scene_revision": {
+      "minimum": 0,
+      "title": "Scene Revision",
+      "type": "integer"
+    },
     "state": {
       "$ref": "#/$defs/JobState"
+    },
+    "stop_confirmed": {
+      "default": false,
+      "title": "Stop Confirmed",
+      "type": "boolean"
     },
     "timeout_seconds": {
       "minimum": 1,
@@ -194,8 +270,12 @@
   "required": [
     "job_id",
     "request_id",
+    "owner_id",
     "idempotency_key",
+    "payload_sha256",
     "operation",
+    "scene_id",
+    "scene_revision",
     "state",
     "progress",
     "timeout_seconds",

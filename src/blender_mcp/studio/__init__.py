@@ -6,7 +6,12 @@ from .contracts import (
     Job,
     StudioRequest,
     StudioResponse,
+    ensure_supported,
     validate_request,
+    validate_transition,
 )
 
-__all__ = ["Artifact", "ArtifactManifest", "Job", "StudioRequest", "StudioResponse", "validate_request"]
+__all__ = [
+    "Artifact", "ArtifactManifest", "Job", "StudioRequest", "StudioResponse",
+    "ensure_supported", "validate_request", "validate_transition",
+]

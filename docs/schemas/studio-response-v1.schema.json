@@ -38,7 +38,7 @@
     },
     "ObjectRef": {
       "additionalProperties": false,
-      "description": "Persistent UUID stored on the Blender datablock; name is only a label.",
+      "description": "UUID persisted on a datablock; name is only a display label.",
       "properties": {
         "id": {
           "format": "uuid",
@@ -89,6 +89,22 @@
           "title": "Objects",
           "type": "array"
         },
+        "scene_diff": {
+          "$ref": "#/$defs/SceneDiff"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
         "summary": {
           "anyOf": [
             {
@@ -103,6 +119,37 @@
         }
       },
       "title": "ResultPayload",
+      "type": "object"
+    },
+    "SceneDiff": {
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Created",
+          "type": "array"
+        },
+        "deleted": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Deleted",
+          "type": "array"
+        },
+        "updated": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Updated",
+          "type": "array"
+        }
+      },
+      "title": "SceneDiff",
       "type": "object"
     },
     "StudioError": {
@@ -199,6 +246,11 @@
       ],
       "default": null
     },
+    "scene_id": {
+      "format": "uuid",
+      "title": "Scene Id",
+      "type": "string"
+    },
     "scene_revision": {
       "minimum": 0,
       "title": "Scene Revision",
@@ -212,10 +264,18 @@
       ],
       "title": "Status",
       "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
     }
   },
   "required": [
     "request_id",
+    "scene_id",
     "scene_revision",
     "status"
   ],
