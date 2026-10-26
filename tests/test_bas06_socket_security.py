@@ -143,3 +143,19 @@ def test_invalid_complete_frame_does_not_reach_main_thread():
     s._handle_client(sock)
     assert sock.sent and json.loads(sock.sent[0])["code"] == "malformed_payload"
     assert s.command_queue.empty()
+
+
+def test_ten_successive_restart_rebind_cycles():
+    from test_server_threading import BlenderMCPServer, _free_port
+    port = _free_port()
+    for attempt in range(10):
+        server = BlenderMCPServer(host="127.0.0.1", port=port,
+                                  token=TOKEN, profile="observer")
+        server.start()
+        try:
+            assert server.running, f"server did not bind at attempt {attempt}"
+            with socket.create_connection(("127.0.0.1", port), timeout=2):
+                pass
+        finally:
+            server.stop()
+        print(f"BAS06_REBIND_OK cycle={attempt+1} port={port}", flush=True)

@@ -1356,7 +1356,7 @@ class BlenderMCPServer:
             # Create socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind((self.host, self.port))
+            self.socket.bind(('127.0.0.1', self.port))
             # Backlog of 1 meant a reconnecting client could complete the TCP
             # handshake and then never be accept()ed - a connection that looks
             # established but is never serviced.
@@ -1438,13 +1438,16 @@ class BlenderMCPServer:
     def _server_loop(self):
         """Main server loop in a separate thread"""
         print("Server thread started")
-        self.socket.settimeout(1.0)  # Timeout to allow for stopping
+        listener = self.socket
+        if listener is None:
+            return
+        listener.settimeout(0.25)  # Low latency shutdown/rebind
 
         while self.running:
             try:
                 # Accept new connection
                 try:
-                    client, address = self.socket.accept()
+                    client, address = listener.accept()
                     with self._clients_lock:
                         if len(self._clients) >= self.MAX_CLIENTS:
                             try:
@@ -1466,6 +1469,8 @@ class BlenderMCPServer:
                     # Just check running condition
                     continue
                 except Exception as e:
+                    if not self.running:
+                        break  # Listener closed by intentional stop/rebind.
                     print(f"Error accepting connection: {str(e)}")
                     time.sleep(0.5)
             except Exception as e:
