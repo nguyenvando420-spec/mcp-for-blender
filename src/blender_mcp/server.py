@@ -329,8 +329,11 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # model has no way to fetch one. Per-tool details belong in tool descriptions.
 # Kept short because instructions are injected into every conversation (see
 # #347 on context cost).
-SERVER_INSTRUCTIONS = """MCP for Blender drives the user's live Blender. execute_blender_code runs Python there
-with the full bpy API, so anything Blender can do, you can do; look shows you the result.
+SERVER_INSTRUCTIONS = """MCP for Blender drives the user's live Blender. Default observer profile is read-only.
+Arbitrary Blender Python and legacy generation tools are ONLY available in explicitly
+acknowledged developer-local mode. No AST validator is a Blender sandbox.
+In developer-local mode, execute_blender_code runs unrestricted Python in Blender;
+look shows you the result.
 
 Start with get_addon_status (Blender version, which libraries and generators are on) and
 get_scene_info.
@@ -2247,6 +2250,22 @@ async def _list_tools_for_client():
 
 
 mcp._mcp_server.list_tools()(_list_tools_for_client)
+
+
+async def _call_tool_for_profile(name: str, arguments: dict):
+    """Enforce profile at the protocol dispatch boundary, not only tools/list.
+
+    An MCP caller can send tools/call for a hidden tool by name. Filtering the
+    advertised list is not authorization. Only developer-local may call all
+    legacy tools; Studio has no mutation handlers before BAS-05.
+    """
+    allowed = exposed_legacy_tools(profile_from_env(), {name})
+    if name not in allowed:
+        raise PolicyDenied("permission_denied: tool is not allowed for this profile")
+    return await mcp.call_tool(name, arguments)
+
+
+mcp._mcp_server.call_tool(validate_input=False)(_call_tool_for_profile)
 
 
 # Main execution
