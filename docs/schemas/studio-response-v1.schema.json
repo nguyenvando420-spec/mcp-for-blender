@@ -1,0 +1,284 @@
+{
+  "$defs": {
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "invalid_input",
+        "unsupported_version",
+        "capability_unavailable",
+        "permission_denied",
+        "stale_scene",
+        "object_not_found",
+        "conflict",
+        "timeout",
+        "cancelled",
+        "worker_unavailable",
+        "internal"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "ObjectRef": {
+      "additionalProperties": false,
+      "description": "UUID persisted on a datablock; name is only a display label.",
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "object",
+            "collection",
+            "material",
+            "camera",
+            "light"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "title": "ObjectRef",
+      "type": "object"
+    },
+    "ResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Artifact Ids",
+          "type": "array"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/ObjectRef"
+          },
+          "title": "Objects",
+          "type": "array"
+        },
+        "scene_diff": {
+          "$ref": "#/$defs/SceneDiff"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        }
+      },
+      "title": "ResultPayload",
+      "type": "object"
+    },
+    "SceneDiff": {
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Created",
+          "type": "array"
+        },
+        "deleted": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Deleted",
+          "type": "array"
+        },
+        "updated": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Updated",
+          "type": "array"
+        }
+      },
+      "title": "SceneDiff",
+      "type": "object"
+    },
+    "StudioError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Details",
+          "type": "object"
+        },
+        "message": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "StudioError",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "#/$defs/ContractVersion"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StudioError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Id"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResultPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scene_id": {
+      "format": "uuid",
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "scene_revision": {
+      "minimum": 0,
+      "title": "Scene Revision",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "accepted",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "request_id",
+    "scene_id",
+    "scene_revision",
+    "status"
+  ],
+  "title": "StudioResponse",
+  "type": "object"
+}
