@@ -4,7 +4,7 @@ Tài liệu này dành cho fork [nguyenvando420-spec/mcp-for-blender](https://gi
 
 ## 1. Clone và chạy bằng local checkout
 
-Yêu cầu: Git, uv và Python 3.11 (theo .python-version). Lệnh bên dưới dùng trên Linux/macOS; trên Windows chạy tương tự với PowerShell.
+Yêu cầu: Git, uv và Python 3.12.14 (theo .python-version, cập nhật BAS-02). Lệnh bên dưới dùng trên Linux/macOS; Windows chưa được nghiệm thu. Runtime Blender, golden smoke và Colab: xem [BAS-02-runtime.md](BAS-02-runtime.md).
 
 ~~~bash
 git clone https://github.com/nguyenvando420-spec/mcp-for-blender.git
@@ -35,23 +35,23 @@ uv run --frozen --with pytest==8.4.2 pytest -q
 uv build
 ~~~
 
-CI chạy các lệnh này trên Python 3.11 và 3.12. Lint giới hạn ở file mới trong BAS-01 để không khóa build bởi các lỗi kiểu cũ của upstream; mở rộng kiểm tra sau khi thống nhất baseline.
+CI chạy các lệnh này trên Python 3.11.14 và 3.12.14 (truyền `--python` theo matrix). Lint giới hạn ở tests baseline/runtime và scripts để không khóa build bởi các lỗi kiểu cũ của upstream.
 
 ## 3. Blender headless smoke
 
-Cần Blender CLI trên máy hoặc Google Colab. Đây là bài test CPU nhẹ, không phụ thuộc GPU, dùng Cycles 8 samples. Chạy:
+Đây là lệnh BAS-01 cấp thấp cho Blender CLI bất kỳ; không dùng làm bằng chứng runtime pin của BAS-02. Bài test CPU nhẹ, không phụ thuộc GPU, dùng Cycles 8 samples. Chạy:
 
 ~~~bash
 blender --background --factory-startup --python scripts/blender_headless_smoke.py -- --output-dir artifacts/bas01
 ~~~
 
-Kỳ vọng: ghi `BAS01_SMOKE_OK` và hai artifact `baseline.blend`, `preview.png`. Có thể chạy thủ công GitHub Actions **Fork baseline CI → Run workflow** để nhận artifact headless (nếu Actions được bật). Chạy headless này độc lập với Add-on GUI; Colab không thay thế kiểm thử GUI.
+Kỳ vọng: ghi `BAS01_SMOKE_OK` và artifact `baseline.blend`, `preview.png`. BAS-02 dùng `uv run --frozen python scripts/run_golden.py --output-dir artifacts/bas02-run-1` để tải Blender pin, render và mở lại BLEND. Job PR/manual **Fork baseline CI** dùng cùng runner. Chạy headless này độc lập với Add-on GUI; Colab không thay thế kiểm thử GUI.
 
 ## 4. Đồng bộ upstream và phát triển tính năng
 
 ~~~bash
 git fetch upstream
-git checkout -b feature/<ten-tinh-nang> main
+git checkout -b feature_<ten-tinh-nang> main
 # Không thay đổi trực tiếp nhánh main khi chưa qua CI và PR.
 ~~~
 

@@ -7,6 +7,7 @@ on:
       - develop
       - 'bas-**'
       - 'feature/**'
+      - 'feature_*'
   pull_request:
   workflow_dispatch:
 
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11.14', '3.12.14']
     env:
       DISABLE_TELEMETRY: 'true'
       BLENDER_MCP_SAFE_MODE: '1'
@@ -34,20 +35,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Sync the committed lockfile
-        run: uv sync --frozen
+        run: uv sync --frozen --python ${{ matrix.python-version }}
       - name: Compile Python sources (including the bpy-dependent addon)
-        run: uv run --frozen python -m compileall -q src tests scripts addon.py main.py
+        run: uv run --frozen --python ${{ matrix.python-version }} python -m compileall -q src tests scripts addon.py main.py
       - name: Lint new baseline scripts
-        run: uv run --frozen --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py scripts/blender_headless_smoke.py
+        run: uv run --frozen --python ${{ matrix.python-version }} --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py tests/test_golden_runtime.py scripts
       - name: Run upstream and fork unit tests
-        run: uv run --frozen --with pytest==8.4.2 pytest -q
+        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -q
       - name: Check fork CLI entrypoint
-        run: uv run --frozen mcp-for-blender --help
+        run: uv run --frozen --python ${{ matrix.python-version }} mcp-for-blender --help
       - name: Build source and wheel distributions
         run: uv build
 
   blender-headless-smoke:
-    name: Blender CPU smoke (PR/manual)
+    name: Blender 4.5.15 golden CPU (PR/manual)
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -55,36 +56,20 @@ jobs:
       DISABLE_TELEMETRY: 'true'
     steps:
       - uses: actions/checkout@v4
-      - name: Install Blender from Ubuntu
-        run: sudo apt-get update && sudo apt-get install -y blender
-      - name: Run Blender without a GPU or GUI
-        run: blender --background --factory-startup --python scripts/blender_headless_smoke.py -- --output-dir "${{ runner.temp }}/blender-baseline"
-      - name: Validate Blender outputs
-        env:
-          BAS01_OUT: ${{ runner.temp }}/blender-baseline
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          import struct
-
-          out = Path(os.environ["BAS01_OUT"])
-          blend = out / "baseline.blend"
-          png = out / "preview.png"
-          assert blend.is_file() and blend.stat().st_size > 1024, "Missing/empty .blend"
-          assert png.is_file() and png.stat().st_size > 64, "Missing/empty .png"
-          assert blend.read_bytes()[:7] == b"BLENDER", "Invalid .blend header"
-          with png.open("rb") as f:
-              header = f.read(24)
-          assert header[:8] == b"\x89PNG\r\n\x1a\n", "Invalid PNG signature"
-          width, height = struct.unpack(">II", header[16:24])
-          assert (width, height) == (320, 180), f"Bad render size: {width}x{height}"
-          print(f"BAS01_ARTIFACTS_OK .blend={blend.stat().st_size}B png={png.stat().st_size}B {width}x{height}")
-          PY
-      - name: Upload .blend and preview image
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12.14'
+      - name: Install shared libraries (Blender itself is checksum-pinned)
+        run: sudo apt-get update && sudo apt-get install -y libxrender1 libxi6 libxfixes3 libxkbcommon0 libsm6 libgl1
+      - name: Render and reopen golden scene with the pinned runtime
+        run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden"
+      - name: Verify evidence bundle
+        run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
+      - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bas01-blender-headless-artifacts
-          path: ${{ runner.temp }}/blender-baseline
+          name: bas02-blender-golden-artifacts
+          path: ${{ runner.temp }}/blender-golden
+          retention-days: 30
           if-no-files-found: warn

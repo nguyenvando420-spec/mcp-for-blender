@@ -21,6 +21,12 @@ local_tests/
 supabase/
 
 scripts/
+!scripts/
+scripts/__pycache__/
+
+# Downloaded runtimes and generated evidence
+.blender-runtime/
+artifacts/
 
 # Legacy PyPI shim — built and published separately, see runbook
 legacy-shim/
