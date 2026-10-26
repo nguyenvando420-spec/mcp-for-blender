@@ -1,4 +1,4 @@
-# BAS-06 — Socket boundary and bounded Blender GUI dispatch (WIP)
+# BAS-06 — Socket boundary, bounded Blender GUI dispatch and internal worker
 
 Date: 2026-10-26. Branch: `feature_bas06-socket-hardening`. Base: main `1171d5cff`.
 
@@ -32,3 +32,5 @@ Environment manifest: Blender 4.5.15 pinned, gateway Python 3.11.14/3.12.14; act
 - This worker is an internal substrate, not a user-facing `studio_render_still` tool. BAS-12 must supply atomic snapshot isolation and output sandbox; BAS-13 must supply typed render settings and public job operation; BAS-22 adds durable distributed scheduling/leases and automated recovery. Inference provider backends remain disabled pending dedicated workers. BAS-06 does not claim full production sandbox, remote access, GPU inference or independent human UAT.
 - Deliberate migration requirement: both Blender GUI and the MCP gateway must receive the same `BLENDER_MCP_SOCKET_TOKEN` environment variable (32+ characters), generated locally and **never** logged or committed. `BLENDER_MCP_PROFILE` must match the intended scope on the Blender side and gateway. `developer-local` requires `BLENDER_MCP_DEV_ACK=I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON`. Default observer remains read-only. Old unauthenticated transport clients are intentionally rejected (protocol bump 15→16).
 - GUI timer budget is a 10 ms scheduling admission target for four commands; it is not a preemptive timeout for arbitrary bpy operation. Developer-local raw Python remains explicitly unsafe and should never be enabled for untrusted clients.
+
+- BAS-06 handshake now only advertises add-on commands actually allowed by the active socket profile. CI prints each of 10 repeated port rebind cycles with `pytest -s`; successful Python matrix and latest GUI worker E2E must still be checked at the final reviewed SHA.

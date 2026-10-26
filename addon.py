@@ -1806,7 +1806,7 @@ class BlenderMCPServer:
             "name": bl_info.get("name", "MCP for Blender"),
             "addon_version": list(bl_info.get("version", (0, 0))),
             "protocol_version": ADDON_PROTOCOL_VERSION,
-            "capabilities": sorted([
+            "capabilities": sorted(name for name in [
                 "get_scene_info",
                 "studio_scene_inspect_v1",
                 "studio_create_object_v1",
@@ -1822,7 +1822,7 @@ class BlenderMCPServer:
                 "drain_human_activity",
                 "get_telemetry_consent",
                 "set_telemetry_consent",
-            ]),
+            ] if self._allowed_command(name)[0]),
             "blender_version": bpy.app.version_string,
             "premium_generators": premium_enabled_generators(),
         }
