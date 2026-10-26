@@ -4,6 +4,7 @@ import re
 import textwrap
 import bpy
 import mathutils
+import math
 import json
 import threading
 import socket
