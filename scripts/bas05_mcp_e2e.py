@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import platform
 import socket
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,10 @@ def main():
     blender = ROOT / ".blender-runtime" / "runtime" / spec["artifacts"]["Linux-x86_64"]["executable"]
     assert blender.is_file(), "Run pinned BAS-02 golden job before BAS-05 E2E"
     port = free_port()
+    # Both GUI Blender and the MCP subprocess receive the same random secret;
+    # it never appears in command-line arguments or log artifacts.
+    os.environ["BLENDER_MCP_SOCKET_TOKEN"] = secrets.token_urlsafe(32)
+    os.environ["BLENDER_MCP_PROFILE"] = "studio-local"
     done = output / "done"
     log_path = output / "blender-gui.log"
     log = log_path.open("w")

@@ -40,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 15
+ADDON_PROTOCOL_VERSION = 16
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -1205,9 +1205,39 @@ def _object_detail(obj):
 
 
 class BlenderMCPServer:
-    def __init__(self, host='localhost', port=9876):
+    # BAS-06: bounded ingress; budgets limit work per timer tick, not an individual
+    # bpy command. Synchronous network/render operations are denied below.
+    MAX_COMMAND_BYTES = 1024 * 1024
+    MAX_QUEUE = 128
+    MAX_CLIENTS = 16
+    MAX_REQUESTS = 512
+    DRAIN_COMMANDS = 4
+    DRAIN_SECONDS = 0.010
+    READ_COMMANDS = frozenset({
+        "ping", "get_addon_info", "get_scene_info", "studio_scene_inspect_v1",
+        "get_object_info", "list_scene_items", "get_world_state_snapshot",
+        "get_telemetry_consent", "get_request_status",
+    })
+    # No main-thread HTTP/inference/download/import/export/render. The legacy
+    # developer-local escape hatch (execute_code) remains explicitly unsafe.
+    LONG_COMMANDS = frozenset({
+        "create_hunyuan_job", "poll_hunyuan_job_status",
+        "import_generated_asset_hunyuan", "create_rodin_job",
+        "poll_rodin_job_status", "import_generated_asset",
+        "get_polyhaven_categories", "search_polyhaven_assets",
+        "download_polyhaven_asset", "get_polyhaven_asset_preview", "set_texture",
+        "search_sketchfab_models", "get_sketchfab_model_preview",
+        "download_sketchfab_model", "search_polypizza_models",
+        "download_polypizza_model", "create_meshy_job", "refine_meshy_job",
+        "poll_meshy_job_status", "import_generated_asset_meshy",
+        "export_scene", "get_viewport_screenshot",
+    })
+
+    def __init__(self, host='localhost', port=9876, token=None, profile=None):
         self.host = host
         self.port = port
+        self.auth_token = token if token is not None else os.getenv("BLENDER_MCP_SOCKET_TOKEN", "")
+        self.profile = profile if profile is not None else os.getenv("BLENDER_MCP_PROFILE", "observer")
         self.running = False
         self.socket = None
         self.server_thread = None
@@ -1216,7 +1246,10 @@ class BlenderMCPServer:
         # thread-safe, so registering a timer per command (the previous
         # approach) could silently drop the callback - on Windows especially -
         # leaving the client blocked in recv() until its socket timeout.
-        self.command_queue = queue.Queue()
+        self.command_queue = queue.Queue(maxsize=self.MAX_QUEUE)
+        self._requests = {}  # request_id -> {state, response}; in-process recovery only
+        self._requests_lock = threading.Lock()
+        self._responses = {}  # client -> bounded writer queue; never send on bpy thread
         # Live client sockets, so stop() can unblock threads parked in recv().
         self._clients = set()
         self._clients_lock = threading.Lock()
@@ -1300,6 +1333,14 @@ class BlenderMCPServer:
         return model, None
 
     def start(self):
+        if self.host not in ("localhost", "127.0.0.1"):
+            raise ValueError("Blender MCP socket must bind literal loopback")
+        if not isinstance(self.auth_token, str) or len(self.auth_token) < 32:
+            raise ValueError("BLENDER_MCP_SOCKET_TOKEN (32+ characters) is required")
+        if self.profile not in ("observer", "studio-local", "developer-local"):
+            raise ValueError("Blender MCP socket profile is not supported")
+        if self.profile == "developer-local" and os.getenv("BLENDER_MCP_DEV_ACK") != "I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON":
+            raise ValueError("developer-local requires BLENDER_MCP_DEV_ACK")
         if bpy.app.background:
             print("BlenderMCP: cannot start server in background mode (blender -b) - commands would never execute\n"
                   "BlenderMCP: run Blender with a GUI, or use a virtual display: xvfb-run -a blender")
@@ -1365,6 +1406,7 @@ class BlenderMCPServer:
         with self._clients_lock:
             clients = list(self._clients)
             self._clients.clear()
+            self._responses.clear()
         for client in clients:
             try:
                 client.shutdown(socket.SHUT_RDWR)
@@ -1426,88 +1468,187 @@ class BlenderMCPServer:
 
         print("Server thread stopped")
 
-    def _drain_command_queue(self):
-        """Run queued commands on Blender's main thread.
+    def _allowed_command(self, cmd_type):
+        """Enforce policy before a command reaches bpy (and before queueing)."""
+        if cmd_type in self.LONG_COMMANDS:
+            return False, "async_required"
+        if self.profile == "developer-local":
+            return True, ""
+        if cmd_type in self.READ_COMMANDS:
+            return True, ""
+        if self.profile == "studio-local" and cmd_type == "studio_create_object_v1":
+            return True, ""
+        return False, "permission_denied"
 
-        Registered once by start(); returns the poll interval so Blender keeps
-        calling it. All bpy access happens here, on the main thread.
+    @staticmethod
+    def _error(code, request_id=None):
+        return {"status": "error", "code": code, "message": code,
+                "request_id": request_id}
+
+    def _receive_command(self, client, raw):
+        """Untrusted socket thread: validation, authentication and backpressure.
+
+        Never access bpy, and never call bpy.app.timers here.
         """
+        try:
+            command = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            client.sendall(json.dumps(self._error("malformed_payload")).encode("utf-8"))
+            return True
+        if not isinstance(command, dict):
+            client.sendall(json.dumps(self._error("invalid_input")).encode("utf-8"))
+            return True
+        rid = command.get("request_id")
+        if rid is not None and (not isinstance(rid, str) or not (1 <= len(rid) <= 80)):
+            client.sendall(json.dumps(self._error("invalid_request_id")).encode("utf-8"))
+            return True
+        token = command.pop("auth", None)
+        if not isinstance(token, str) or not hmac.compare_digest(token, self.auth_token):
+            client.sendall(json.dumps(self._error("unauthorized", rid)).encode("utf-8"))
+            return False
+        kind = command.get("type")
+        if not isinstance(kind, str) or len(kind) > 80 or not isinstance(command.get("params", {}), dict):
+            client.sendall(json.dumps(self._error("invalid_input", rid)).encode("utf-8"))
+            return True
+        allowed, denial = self._allowed_command(kind)
+        if not allowed:
+            client.sendall(json.dumps(self._error(denial, rid)).encode("utf-8"))
+            return True
+        if rid is not None:
+            with self._requests_lock:
+                old = self._requests.get(rid)
+                if old is not None:
+                    response = old.get("response") or {
+                        "status": "pending", "request_id": rid, "state": old["state"],
+                    }
+                else:
+                    response = None
+            if response is not None:
+                client.sendall(json.dumps(response).encode("utf-8"))
+                return True
+        try:
+            self.command_queue.put_nowait((command, client))
+        except queue.Full:
+            client.sendall(json.dumps(self._error("queue_full", rid)).encode("utf-8"))
+            return True
+        if rid is not None:
+            with self._requests_lock:
+                # Bounded recovery ledger; completed entries are evicted first.
+                if len(self._requests) >= self.MAX_REQUESTS:
+                    for key, value in list(self._requests.items()):
+                        if value["state"] == "completed":
+                            del self._requests[key]
+                            break
+                if len(self._requests) < self.MAX_REQUESTS:
+                    self._requests[rid] = {"state": "queued", "response": None}
+        return True
+
+    def _drain_command_queue(self):
+        """Bounded bpy main-thread timer. Responses are written by client threads."""
         if not self.running:
             return None
-
-        while True:
+        deadline = time.monotonic() + self.DRAIN_SECONDS
+        processed = 0
+        while processed < self.DRAIN_COMMANDS and time.monotonic() < deadline:
             try:
                 command, client = self.command_queue.get_nowait()
             except queue.Empty:
                 break
-
+            processed += 1
+            rid = command.get("request_id")
+            if rid is not None:
+                with self._requests_lock:
+                    if rid in self._requests:
+                        self._requests[rid]["state"] = "running"
             try:
-                response = self.execute_command(command)
-                response_json = json.dumps(response)
-            except Exception as e:
-                print(f"Error executing command: {str(e)}")
-                traceback.print_exc()
-                response_json = json.dumps({"status": "error", "message": str(e)})
-
-            try:
-                client.sendall(response_json.encode('utf-8'))
-            except Exception:
-                print("Failed to send response - client disconnected")
-
+                if command["type"] == "get_request_status":
+                    lookup_id = command["params"].get("request_id")
+                    with self._requests_lock:
+                        entry = self._requests.get(lookup_id)
+                        result = dict(entry) if entry else {"state": "unknown"}
+                    response = {"status": "success", "result": result}
+                else:
+                    response = self.execute_command(command)
+                if not isinstance(response, dict):
+                    raise ValueError("Invalid handler response")
+            except Exception as exc:
+                print(f"BlenderMCP command failed: {type(exc).__name__}")
+                response = self._error("execution_failed", rid)
+            response["request_id"] = rid
+            if rid is not None:
+                with self._requests_lock:
+                    if rid in self._requests:
+                        # A large snapshot is not retained in the recovery ledger.
+                        packed = json.dumps(response)
+                        self._requests[rid] = {"state": "completed",
+                                               "response": response if len(packed) <= 16384 else None}
+            with self._clients_lock:
+                writer = self._responses.get(client)
+            if writer is not None:
+                try:
+                    writer.put_nowait(json.dumps(response).encode("utf-8"))
+                except queue.Full:
+                    print("BlenderMCP response queue full; result remains in request ledger")
         return 0.05
 
     def _handle_client(self, client):
-        """Handle connected client"""
-        print("Client handler started")
-        # A finite timeout keeps this loop responsive to self.running instead
-        # of parking in recv() forever.
-        client.settimeout(1.0)
+        """Bounded ingress and response writer on a socket worker thread."""
+        client.settimeout(0.2)
         with self._clients_lock:
             self._clients.add(client)
-        buffer = b''
-
+            writer = queue.Queue(maxsize=4)
+            self._responses[client] = writer
+        buffer = b""
+        partial_since = None
         try:
             while self.running:
-                # Receive data
+                try:
+                    while True:
+                        packet = writer.get_nowait()
+                        client.sendall(packet)
+                except queue.Empty:
+                    pass
+                data = b""
                 try:
                     data = client.recv(8192)
-                    if not data:
-                        print("Client disconnected")
-                        break
-
-                    buffer += data
-                    try:
-                        # Try to parse command
-                        command = json.loads(buffer.decode('utf-8'))
-                        buffer = b''
-
-                        # Hand off to the main thread. Never call
-                        # bpy.app.timers.register() from here - it is not
-                        # thread-safe and the callback can be silently lost.
-                        print(f"Queued command: {command.get('type')}")
-                        self.command_queue.put((command, client))
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        # Incomplete data, wait for more. A multi-byte UTF-8
-                        # character can land split across a recv() chunk
-                        # boundary, which fails decode() before json.loads()
-                        # ever runs - that's incomplete data too, not garbage.
-                        pass
                 except socket.timeout:
-                    # Expected; loop round and re-check self.running.
+                    if buffer and partial_since is not None and time.monotonic() - partial_since > 5:
+                        client.sendall(json.dumps(self._error("malformed_payload")).encode("utf-8"))
+                        break
                     continue
-                except Exception as e:
-                    print(f"Error receiving data: {str(e)}")
+                if not data:
                     break
-        except Exception as e:
-            print(f"Error in client handler: {str(e)}")
+                if not buffer:
+                    partial_since = time.monotonic()
+                buffer += data
+                if len(buffer) > self.MAX_COMMAND_BYTES:
+                    client.sendall(json.dumps(self._error("payload_too_large")).encode("utf-8"))
+                    break
+                while buffer:
+                    if b"\n" in buffer:
+                        raw, buffer = buffer.split(b"\n", 1)
+                        if not raw.strip():
+                            continue
+                    else:
+                        # Backward-compatible unframed single JSON payload.
+                        try:
+                            json.loads(buffer.decode("utf-8"))
+                        except (ValueError, UnicodeError):
+                            break  # incomplete UTF-8/JSON; bounded by size and 5s
+                        raw, buffer = buffer, b""
+                    partial_since = time.monotonic() if buffer else None
+                    if not self._receive_command(client, raw):
+                        return
+        except (ConnectionError, OSError) as exc:
+            print(f"BlenderMCP client disconnected: {type(exc).__name__}")
         finally:
             with self._clients_lock:
                 self._clients.discard(client)
+                self._responses.pop(client, None)
             try:
                 client.close()
-            except:
+            except OSError:
                 pass
-            print("Client handler stopped")
 
     def execute_command(self, command):
         """Execute a command in the main Blender thread"""
