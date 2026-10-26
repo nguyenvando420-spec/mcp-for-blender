@@ -7,6 +7,8 @@ import asyncio
 from blender_mcp import blender_scripts, guides, server
 from blender_mcp.openai_apps import is_app_only
 
+STUDIO_TOOLS = {"studio_handshake", "studio_scene_inspect", "studio_create_object"}
+
 MODEL_TOOLS = {
     "get_addon_status", "disable_telemetry", "get_scene_info", "execute_blender_code",
     "record_trajectory_feedback", "look", "generate_3d", "search_assets", "import_asset",
@@ -15,7 +17,7 @@ MODEL_TOOLS = {
 
 def test_model_sees_only_the_consolidated_tools():
     tools = asyncio.run(server.mcp.list_tools())
-    assert {t.name for t in tools if not is_app_only(t)} == MODEL_TOOLS
+    assert {t.name for t in tools if not is_app_only(t)} == MODEL_TOOLS | STUDIO_TOOLS
 
 
 def test_every_guide_has_a_title_summary_and_body():
