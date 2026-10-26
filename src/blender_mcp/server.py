@@ -30,7 +30,7 @@ from .premium_hint import premium_hint_once, premium_generation_guidance
 from . import blender_scripts, context_log, generation
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .security_policy import (profile_from_env, require_loopback, raw_python_allowed,
-                              exposed_legacy_tools, PolicyDenied)
+                              exposed_legacy_tools, PolicyDenied, Profile)
 from .openai_apps import (
     APP_MIME_TYPE,
     VIEWPORT_STATE_META,
@@ -2266,6 +2266,35 @@ async def _call_tool_for_profile(name: str, arguments: dict):
 
 
 mcp._mcp_server.call_tool(validate_input=False)(_call_tool_for_profile)
+
+
+def _can_read_legacy_resources():
+    return profile_from_env() in (
+        Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL
+    )
+
+
+async def _list_resources_for_profile():
+    if not _can_read_legacy_resources():
+        return []
+    return await mcp.list_resources()
+
+
+async def _list_resource_templates_for_profile():
+    if not _can_read_legacy_resources():
+        return []
+    return await mcp.list_resource_templates()
+
+
+async def _read_resource_for_profile(uri):
+    if not _can_read_legacy_resources():
+        raise PolicyDenied("permission_denied: resources not allowed for this profile")
+    return await mcp.read_resource(uri)
+
+
+mcp._mcp_server.list_resources()(_list_resources_for_profile)
+mcp._mcp_server.list_resource_templates()(_list_resource_templates_for_profile)
+mcp._mcp_server.read_resource()(_read_resource_for_profile)
 
 
 # Main execution
