@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Check out fork source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@v6
         with:
@@ -56,6 +58,8 @@ jobs:
       DISABLE_TELEMETRY: 'true'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12.14'
