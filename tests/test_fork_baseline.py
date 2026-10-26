@@ -48,4 +48,4 @@ def test_local_package_entrypoint() -> None:
     assert config["project"]["scripts"]["mcp-for-blender"] == "blender_mcp.server:main"
     assert config["tool"]["setuptools"]["package-data"]["blender_mcp"]
     assert (ROOT / "uv.lock").is_file()
-    assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.11"
+    assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.12.14"

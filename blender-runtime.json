@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "blender_version": "4.5.15",
+  "gateway_python": "3.12.14",
+  "checksum_source": "https://mirror.blender.org/release/Blender4.5/blender-4.5.15.sha256",
+  "artifacts": {
+    "Linux-x86_64": {
+      "filename": "blender-4.5.15-linux-x64.tar.xz",
+      "sha256": "0d2b8bb2efe97e6c8eb57de6b7322f8800e1984e3125b60decca5f6771e4773e",
+      "urls": [
+        "https://download.blender.org/release/Blender4.5/blender-4.5.15-linux-x64.tar.xz",
+        "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.5/blender-4.5.15-linux-x64.tar.xz"
+      ],
+      "executable": "blender-4.5.15-linux-x64/blender"
+    },
+    "Darwin-arm64": {
+      "filename": "blender-4.5.15-macos-arm64.dmg",
+      "sha256": "bfbc0bda099d1ab7aef0992a584f872f58bed9bb491210ad45f9ca071aa2e688",
+      "urls": [
+        "https://download.blender.org/release/Blender4.5/blender-4.5.15-macos-arm64.dmg",
+        "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.5/blender-4.5.15-macos-arm64.dmg"
+      ],
+      "executable": "Blender.app/Contents/MacOS/Blender"
+    }
+  }
+}
