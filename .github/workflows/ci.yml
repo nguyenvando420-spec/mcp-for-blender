@@ -1,0 +1,68 @@
+name: Fork baseline CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'bas-**'
+      - 'feature/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    env:
+      DISABLE_TELEMETRY: 'true'
+      BLENDER_MCP_SAFE_MODE: '1'
+    steps:
+      - name: Check out fork source
+        uses: actions/checkout@v4
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync the committed lockfile
+        run: uv sync --frozen
+      - name: Compile Python sources (including the bpy-dependent addon)
+        run: uv run --frozen python -m compileall -q src tests scripts addon.py main.py
+      - name: Lint new baseline scripts
+        run: uv run --frozen --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py scripts/blender_headless_smoke.py
+      - name: Run upstream and fork unit tests
+        run: uv run --frozen --with pytest==8.4.2 pytest -q
+      - name: Check fork CLI entrypoint
+        run: uv run --frozen mcp-for-blender --help
+      - name: Build source and wheel distributions
+        run: uv build
+
+  blender-headless-smoke:
+    name: Blender CPU smoke (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DISABLE_TELEMETRY: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender from Ubuntu
+        run: sudo apt-get update && sudo apt-get install -y blender
+      - name: Run Blender without a GPU or GUI
+        run: blender --background --factory-startup --python scripts/blender_headless_smoke.py -- --output-dir "${{ runner.temp }}/blender-baseline"
+      - name: Upload .blend and preview image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bas01-blender-headless-artifacts
+          path: ${{ runner.temp }}/blender-baseline
+          if-no-files-found: warn
