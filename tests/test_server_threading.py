@@ -79,6 +79,7 @@ def _load_server_class():
         "threading": threading,
         "json": json,
         "hmac": hmac,
+        "hashlib": __import__("hashlib"),
         "time": time,
         "queue": __import__("queue"),
         "traceback": __import__("traceback"),

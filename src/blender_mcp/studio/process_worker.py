@@ -155,6 +155,13 @@ class RenderWorker:
                                         close_fds=True, start_new_session=True)
                 with self._lock:
                     self._processes[job_id] = proc
+                    # A cancel may arrive between state='running' and Popen.
+                    # Re-check under the same lock and stop the newly started
+                    # process before awaiting its result.
+                    with self._connect() as db:
+                        cancelled = bool(self._get(db, job_id)["cancel_requested"])
+                    if cancelled and proc.poll() is None:
+                        proc.terminate()
                 try:
                     exitcode = proc.wait(timeout=row["timeout_seconds"])
                 except subprocess.TimeoutExpired:
