@@ -48,7 +48,7 @@ class _ScriptedSocket:
 
 
 def _make_server():
-    server = BlenderMCPServer(port=0)
+    server = BlenderMCPServer(port=0, token="a"*32, profile="observer")
     server.execute_command = lambda command: {"status": "success", "result": {}}
     return server
 
@@ -67,7 +67,7 @@ def _split_after_lead_byte(payload: bytes) -> int:
 
 def test_split_multibyte_utf8_boundary_is_not_dropped():
     payload = json.dumps(
-        {"type": "ping", "params": {"note": "café ☕ 日本語"}}, ensure_ascii=False
+        {"auth": "a"*32, "type": "ping", "params": {"note": "café ☕ 日本語"}}, ensure_ascii=False
     ).encode("utf-8")
     split_idx = _split_after_lead_byte(payload)
     chunk1, chunk2 = payload[:split_idx], payload[split_idx:]
@@ -97,10 +97,10 @@ def test_split_multibyte_utf8_boundary_keeps_handler_loop_alive():
     If the split killed the loop, this second command would never be queued.
     """
     first = json.dumps(
-        {"type": "ping", "params": {"note": "emoji test 🎨"}}, ensure_ascii=False
+        {"auth": "a"*32, "type": "ping", "params": {"note": "emoji test 🎨"}}, ensure_ascii=False
     ).encode("utf-8")
     split_idx = _split_after_lead_byte(first)
-    second = json.dumps({"type": "ping", "params": {}}).encode("utf-8")
+    second = json.dumps({"auth": "a"*32, "type": "ping", "params": {}}).encode("utf-8")
 
     server = _make_server()
     server.running = True

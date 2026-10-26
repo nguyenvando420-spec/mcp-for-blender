@@ -44,6 +44,8 @@ jobs:
         run: uv run --frozen --python ${{ matrix.python-version }} --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py tests/test_golden_runtime.py tests/test_studio_contracts.py src/blender_mcp/studio scripts
       - name: Run upstream and fork unit tests
         run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -q
+      - name: BAS-06 ten restart/rebind cycles with diagnostic log
+        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -s -q tests/test_bas06_socket_security.py::test_ten_successive_restart_rebind_cycles
       - name: Check fork CLI entrypoint
         run: uv run --frozen --python ${{ matrix.python-version }} mcp-for-blender --help
       - name: Build source and wheel distributions
@@ -69,15 +71,18 @@ jobs:
         run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden"
       - name: Verify evidence bundle
         run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
-      - name: BAS-05 real MCP client -> Blender 4.5.15 GUI (Xvfb)
+      - name: BAS-05/BAS-06 MCP GUI E2E + 100-command stress (Xvfb)
         run: uv run --frozen python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
+      - name: BAS-06 real independent Blender render worker + durable SQLite recovery
+        run: uv run --frozen python scripts/bas06_worker_e2e.py --scene "${{ runner.temp }}/bas05-mcp-gui/bas05-scene.blend" --output-dir "${{ runner.temp }}/bas06-worker"
       - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bas02-bas05-blender-evidence
+          name: bas02-bas06-blender-evidence
           path: |
             ${{ runner.temp }}/blender-golden
             ${{ runner.temp }}/bas05-mcp-gui
+            ${{ runner.temp }}/bas06-worker
           retention-days: 30
           if-no-files-found: warn

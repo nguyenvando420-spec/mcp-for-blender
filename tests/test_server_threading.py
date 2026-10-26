@@ -13,6 +13,7 @@ socket timeout.
 from __future__ import annotations
 
 import ast
+import hmac
 import json
 import socket
 import sys
@@ -70,11 +71,15 @@ def _load_server_class():
     bpy.app = types.SimpleNamespace(background=False, timers=_Timers())
     bpy.context = types.SimpleNamespace(scene=types.SimpleNamespace())
 
+    import os
+    os.environ["BLENDER_MCP_DEV_ACK"] = "I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON"
     namespace = {
         "bpy": bpy,
         "socket": socket,
         "threading": threading,
         "json": json,
+        "hmac": hmac,
+        "hashlib": __import__("hashlib"),
         "time": time,
         "queue": __import__("queue"),
         "traceback": __import__("traceback"),
@@ -101,7 +106,7 @@ def _free_port():
 
 
 def _make_server():
-    server = BlenderMCPServer(port=_free_port())
+    server = BlenderMCPServer(port=_free_port(), token="a"*32, profile="developer-local")
     # Stub out command execution; these tests are about transport, not bpy.
     server.execute_command = lambda command: {
         "status": "success",
@@ -128,7 +133,7 @@ def test_client_thread_never_registers_a_timer():
     server.start()
     try:
         with socket.create_connection(("localhost", server.port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": "a"*32}).encode())
 
             pump = threading.Thread(target=_pump, args=(server,), daemon=True)
             pump.start()
@@ -148,7 +153,7 @@ def test_command_is_queued_not_executed_on_client_thread():
     server.start()
     try:
         with socket.create_connection(("localhost", server.port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": "a"*32}).encode())
 
             # No pump running, so nothing should execute yet.
             deadline = time.time() + 2.0
@@ -216,14 +221,14 @@ def test_restart_rebinds_port_cleanly():
     """A stopped server must fully release the port for the next start()."""
     port = _free_port()
 
-    first = BlenderMCPServer(port=port)
+    first = BlenderMCPServer(port=port, token="a"*32, profile="developer-local")
     first.execute_command = lambda command: {"status": "success", "result": {}}
     first.start()
     with socket.create_connection(("localhost", port), timeout=5):
         pass
     first.stop()
 
-    second = BlenderMCPServer(port=port)
+    second = BlenderMCPServer(port=port, token="a"*32, profile="developer-local")
     second.execute_command = lambda command: {
         "status": "success",
         "result": {"echo": command.get("type")},
@@ -231,7 +236,7 @@ def test_restart_rebinds_port_cleanly():
     second.start()
     try:
         with socket.create_connection(("localhost", port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": "a"*32}).encode())
             pump = threading.Thread(target=_pump, args=(second,), daemon=True)
             pump.start()
             client.settimeout(5)

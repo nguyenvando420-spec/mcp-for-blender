@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP, Context
 import argparse
 import socket
 import json
+import uuid
 import logging
 import tempfile
 import threading
@@ -58,6 +59,9 @@ logger = logging.getLogger("BlenderMCPServer")
 # Default configuration
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9876
+MAX_COMMAND_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+SOCKET_TIMEOUT = 30.0
 
 
 def parse_connection_args(argv):
@@ -124,12 +128,13 @@ class BlenderConnection:
             
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(5.0)
             self.sock.connect((self.host, self.port))
             logger.info(f"Connected to Blender at {self.host}:{self.port}")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to Blender: {str(e)}")
-            self.sock = None
+            self.disconnect()
             return False
     
     def disconnect(self):
@@ -145,12 +150,18 @@ class BlenderConnection:
     def receive_full_response(self, sock, buffer_size=8192):
         """Receive the complete response, potentially in multiple chunks"""
         chunks = []
-        # Use a consistent timeout value that matches the addon's timeout
-        sock.settimeout(180.0)  # Match the addon's timeout
+        received = 0
+        deadline = time.monotonic() + SOCKET_TIMEOUT
+        # Bound total duration, not just each partial recv chunk.
+        sock.settimeout(SOCKET_TIMEOUT)
         
         try:
             while True:
                 try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise socket.timeout("Blender response deadline exceeded")
+                    sock.settimeout(remaining)
                     chunk = sock.recv(buffer_size)
                     if not chunk:
                         # If we get an empty chunk, the connection might be closed
@@ -159,6 +170,9 @@ class BlenderConnection:
                         break
                     
                     chunks.append(chunk)
+                    received += len(chunk)
+                    if received > MAX_RESPONSE_BYTES:
+                        raise ValueError("Blender response exceeds byte limit")
                     
                     # Check if we've received a complete JSON object
                     try:
@@ -171,14 +185,13 @@ class BlenderConnection:
                         # Incomplete JSON, continue receiving
                         continue
                 except socket.timeout:
-                    # If we hit a timeout during receiving, break the loop and try to use what we have
-                    logger.warning("Socket timeout during chunked receive")
-                    break
+                    logger.warning("Blender socket response timed out (state unknown)")
+                    raise
                 except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
                     logger.error(f"Socket connection error during receive: {str(e)}")
                     raise  # Re-raise to be handled by the caller
         except socket.timeout:
-            logger.warning("Socket timeout during chunked receive")
+            raise
         except Exception as e:
             logger.error(f"Error during receive: {str(e)}")
             raise
@@ -219,27 +232,38 @@ class BlenderConnection:
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Blender")
 
+        token = os.getenv("BLENDER_MCP_SOCKET_TOKEN", "")
+        if len(token) < 32:
+            raise PermissionError("BLENDER_MCP_SOCKET_TOKEN (32+ characters) is required")
+        request_id = str(uuid.uuid4())
         command = {
             "type": command_type,
-            "params": params or {}
+            "params": params or {},
+            "request_id": request_id,
+            "auth": token,
         }
+        packet = (json.dumps(command, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(packet) > MAX_COMMAND_BYTES:
+            raise ValueError("Blender command exceeds 1 MiB request limit")
 
         try:
             # Log the command being sent
-            logger.info(f"Sending command: {command_type} with params: {params}")
+            logger.info("Sending Blender command %s request_id=%s", command_type, request_id)
             
             # Send the command
-            self.sock.sendall(json.dumps(command).encode('utf-8'))
+            self.sock.sendall(packet)
             logger.info(f"Command sent, waiting for response...")
             
             # Set a timeout for receiving - use the same timeout as in receive_full_response
-            self.sock.settimeout(180.0)  # Match the addon's timeout
+            self.sock.settimeout(SOCKET_TIMEOUT)
             
             # Receive the response using the improved receive_full_response method
             response_data = self.receive_full_response(self.sock)
             logger.info(f"Received {len(response_data)} bytes of data")
             
             response = json.loads(response_data.decode('utf-8'))
+            if response.get("request_id") != request_id:
+                raise ValueError("Blender response request_id mismatch")
             logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
             
             if response.get("status") == "error":
@@ -247,16 +271,19 @@ class BlenderConnection:
                 raise Exception(response.get("message", "Unknown error from Blender"))
             
             return response.get("result", {})
-        except socket.timeout:
+        except (socket.timeout, TimeoutError):
             logger.error("Socket timeout while waiting for response from Blender")
             # Don't try to reconnect here - let the get_blender_connection handle reconnection
             # Just invalidate the current socket so it will be recreated next time
-            self.sock = None
-            raise Exception("Timeout waiting for Blender response - try simplifying your request. If Blender is running headless (blender -b), commands never execute; run Blender with a GUI or via 'xvfb-run -a blender' instead")
+            self.disconnect()
+            raise TimeoutError(f"Request {request_id} timed out. Execution state is UNKNOWN; "
+                               "timeout does not cancel Blender side effects. "
+                               "Reconnect and query get_request_status with this request_id.")
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {str(e)}")
-            self.sock = None
-            raise Exception(f"Connection to Blender lost: {str(e)}")
+            self.disconnect()
+            raise ConnectionError(f"Connection lost for request {request_id}; "
+                                  "side effect may have completed; check request status") from e
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Blender: {str(e)}")
             # Try to log what was received
@@ -266,8 +293,9 @@ class BlenderConnection:
         except Exception as e:
             logger.error(f"Error communicating with Blender: {str(e)}")
             # Don't try to reconnect here - let the get_blender_connection handle reconnection
-            self.sock = None
-            raise Exception(f"Communication error with Blender: {str(e)}")
+            self.disconnect()
+            raise Exception(f"Communication error for request {request_id}; "
+                            f"state may be unknown: {str(e)}") from e
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
