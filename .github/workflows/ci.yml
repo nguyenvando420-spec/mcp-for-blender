@@ -47,8 +47,8 @@ jobs:
         run: uv build
 
   blender-headless-smoke:
-    name: Blender CPU smoke (manual)
-    if: github.event_name == 'workflow_dispatch'
+    name: Blender CPU smoke (PR/manual)
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -59,6 +59,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y blender
       - name: Run Blender without a GPU or GUI
         run: blender --background --factory-startup --python scripts/blender_headless_smoke.py -- --output-dir "${{ runner.temp }}/blender-baseline"
+      - name: Validate Blender outputs
+        env:
+          BAS01_OUT: ${{ runner.temp }}/blender-baseline
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import struct
+
+          out = Path(os.environ["BAS01_OUT"])
+          blend = out / "baseline.blend"
+          png = out / "preview.png"
+          assert blend.is_file() and blend.stat().st_size > 1024, "Missing/empty .blend"
+          assert png.is_file() and png.stat().st_size > 64, "Missing/empty .png"
+          assert blend.read_bytes()[:7] == b"BLENDER", "Invalid .blend header"
+          with png.open("rb") as f:
+              header = f.read(24)
+          assert header[:8] == b"\\x89PNG\\r\\n\\x1a\\n", "Invalid PNG signature"
+          width, height = struct.unpack(">II", header[16:24])
+          assert (width, height) == (320, 180), f"Bad render size: {width}x{height}"
+          print(f"BAS01_ARTIFACTS_OK .blend={blend.stat().st_size}B png={png.stat().st_size}B {width}x{height}")
+          PY
       - name: Upload .blend and preview image
         if: always()
         uses: actions/upload-artifact@v4
