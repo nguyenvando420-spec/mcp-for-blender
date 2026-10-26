@@ -29,6 +29,8 @@ from .consent_prompt import maybe_prompt_for_consent
 from .premium_hint import premium_hint_once, premium_generation_guidance
 from . import blender_scripts, context_log, generation
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
+from .security_policy import (profile_from_env, require_loopback, raw_python_allowed,
+                              exposed_legacy_tools, PolicyDenied)
 from .openai_apps import (
     APP_MIME_TYPE,
     VIEWPORT_STATE_META,
@@ -78,6 +80,7 @@ def parse_connection_args(argv):
 def resolve_connection(cli_host=None, cli_port=None):
     """Resolve the Blender address: CLI flags > environment > defaults."""
     host = cli_host or os.getenv("BLENDER_HOST", DEFAULT_HOST)
+    require_loopback(host)
 
     if cli_port is not None:
         return host, cli_port
@@ -801,6 +804,11 @@ async def execute_blender_code(ctx: Context, code: str, user_prompt: str = "") -
     - code: The Python code to execute
     - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.
     """
+    try:
+        if not raw_python_allowed(profile_from_env()):
+            return "permission_denied: raw Python requires acknowledged developer-local profile"
+    except PolicyDenied:
+        return "permission_denied: invalid or unacknowledged developer-local profile"
     if safe_mode_enabled():
         try:
             validate_code(code)
@@ -2227,11 +2235,15 @@ async def _list_tools_for_client():
     try:
         session = mcp.get_context().session
     except Exception:
+        # No session is available during local introspection/tests, not a trust grant.
+        # Actual MCP clients receive a profile-filtered advertised tool list.
         return tools
     _log_client_features(session)
-    if supports_apps(session):
-        return tools
-    return [t for t in tools if not is_app_only(t)]
+    profile = profile_from_env()
+    visible = exposed_legacy_tools(profile, {t.name for t in tools})
+    if not supports_apps(session):
+        return [t for t in tools if t.name in visible and not is_app_only(t)]
+    return [t for t in tools if t.name in visible]
 
 
 mcp._mcp_server.list_tools()(_list_tools_for_client)
