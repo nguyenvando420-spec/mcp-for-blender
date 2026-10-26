@@ -146,8 +146,8 @@ class RenderWorker:
             frame_prefix = stagedir / "frame_"
             logpath = self.workspace / "logs" / (job_id + ".log")
             # Fixed command template, no user-supplied argv, no shell=True.
-            cmd = [str(self.blender_executable), "-b", row["snapshot"],
-                   "--disable-autoexec", "-o", str(frame_prefix),
+            cmd = [str(self.blender_executable), "--disable-autoexec",
+                   "-b", row["snapshot"], "-o", str(frame_prefix),
                    "-F", "PNG", "-f", "1"]
             with logpath.open("wb") as logfile:
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,

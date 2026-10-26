@@ -39,6 +39,13 @@ def finish_when_requested():
     if not done_file.exists():
         return 0.2
     try:
+        # Small deterministic CPU scene for the BAS-06 subprocess render job.
+        scene = bpy.context.scene
+        scene.render.engine = "CYCLES"
+        scene.cycles.samples = 8
+        scene.render.resolution_x = 320
+        scene.render.resolution_y = 240
+        scene.render.resolution_percentage = 100
         result = bpy.ops.wm.save_as_mainfile(filepath=str(output_dir / "bas05-scene.blend"))
         import json
         (output_dir / "bas06-heartbeat.json").write_text(json.dumps({

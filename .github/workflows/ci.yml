@@ -71,6 +71,8 @@ jobs:
         run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
       - name: BAS-05/BAS-06 MCP GUI E2E + 100-command stress (Xvfb)
         run: uv run --frozen python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
+      - name: BAS-06 real independent Blender render worker + durable SQLite recovery
+        run: uv run --frozen python scripts/bas06_worker_e2e.py --scene "${{ runner.temp }}/bas05-mcp-gui/bas05-scene.blend" --output-dir "${{ runner.temp }}/bas06-worker"
       - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,5 +81,6 @@ jobs:
           path: |
             ${{ runner.temp }}/blender-golden
             ${{ runner.temp }}/bas05-mcp-gui
+            ${{ runner.temp }}/bas06-worker
           retention-days: 30
           if-no-files-found: warn
