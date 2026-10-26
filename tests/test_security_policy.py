@@ -71,6 +71,9 @@ def test_file_traversal_symlink_overwrite_and_scheme(tmp_path):
     symlink = root / "shortcut.blend"
     symlink.symlink_to(source)
     denied(canonical_allowed_file, symlink.as_uri(), (root,), writing=False)
+    outside_alias = tmp_path / "outside_alias.blend"
+    outside_alias.symlink_to(source)
+    denied(canonical_allowed_file, outside_alias.as_uri(), (root,), writing=False)
     escaped = root / "escaped"
     escaped.symlink_to(tmp_path, target_is_directory=True)
     denied(canonical_allowed_file, (escaped / "private.blend").as_uri(), (root,), writing=False)
@@ -85,6 +88,10 @@ def test_egress_denials(url):
     denied(check_egress_url, url, frozenset({"cdn.example.org"}))
 
 
+def test_bad_network_port_is_policy_denied():
+    denied(check_egress_url, "https://cdn.example.org:bad/a", frozenset({"cdn.example.org"}))
+
+
 def test_egress_allowed_exact_host():
     assert check_egress_url("https://cdn.example.org/x", frozenset({"cdn.example.org"}))
 
@@ -94,6 +101,7 @@ def test_token_signature_expiry_binding_and_tamper():
         SECRET, operation="studio_scene_restore", scene_id=SCENE,
         scene_revision=7, snapshot_id=SNAPSHOT, now=1000,
     )
+    assert len(token) <= 256  # BAS-03 NonEmpty schema limit
     params = dict(operation="studio_scene_restore", scene_id=SCENE,
                   scene_revision=7, snapshot_id=SNAPSHOT)
     verify_confirmation(SECRET, token, now=1000, **params)
