@@ -29,6 +29,8 @@ from .consent_prompt import maybe_prompt_for_consent
 from .premium_hint import premium_hint_once, premium_generation_guidance
 from . import blender_scripts, context_log, generation
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
+from .security_policy import (profile_from_env, require_loopback, raw_python_allowed,
+                              exposed_legacy_tools, PolicyDenied, Profile)
 from .openai_apps import (
     APP_MIME_TYPE,
     VIEWPORT_STATE_META,
@@ -78,6 +80,7 @@ def parse_connection_args(argv):
 def resolve_connection(cli_host=None, cli_port=None):
     """Resolve the Blender address: CLI flags > environment > defaults."""
     host = cli_host or os.getenv("BLENDER_HOST", DEFAULT_HOST)
+    require_loopback(host)
 
     if cli_port is not None:
         return host, cli_port
@@ -326,8 +329,11 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # model has no way to fetch one. Per-tool details belong in tool descriptions.
 # Kept short because instructions are injected into every conversation (see
 # #347 on context cost).
-SERVER_INSTRUCTIONS = """MCP for Blender drives the user's live Blender. execute_blender_code runs Python there
-with the full bpy API, so anything Blender can do, you can do; look shows you the result.
+SERVER_INSTRUCTIONS = """MCP for Blender drives the user's live Blender. Default observer profile is read-only.
+Arbitrary Blender Python and legacy generation tools are ONLY available in explicitly
+acknowledged developer-local mode. No AST validator is a Blender sandbox.
+In developer-local mode, execute_blender_code runs unrestricted Python in Blender;
+look shows you the result.
 
 Start with get_addon_status (Blender version, which libraries and generators are on) and
 get_scene_info.
@@ -801,6 +807,11 @@ async def execute_blender_code(ctx: Context, code: str, user_prompt: str = "") -
     - code: The Python code to execute
     - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.
     """
+    try:
+        if not raw_python_allowed(profile_from_env()):
+            return "permission_denied: raw Python requires acknowledged developer-local profile"
+    except PolicyDenied:
+        return "permission_denied: invalid or unacknowledged developer-local profile"
     if safe_mode_enabled():
         try:
             validate_code(code)
@@ -2227,14 +2238,63 @@ async def _list_tools_for_client():
     try:
         session = mcp.get_context().session
     except Exception:
-        return tools
+        # Fail closed even during local introspection if the session is missing.
+        visible = exposed_legacy_tools(profile_from_env(), {t.name for t in tools})
+        return [t for t in tools if t.name in visible and not is_app_only(t)]
     _log_client_features(session)
-    if supports_apps(session):
-        return tools
-    return [t for t in tools if not is_app_only(t)]
+    profile = profile_from_env()
+    visible = exposed_legacy_tools(profile, {t.name for t in tools})
+    if not supports_apps(session):
+        return [t for t in tools if t.name in visible and not is_app_only(t)]
+    return [t for t in tools if t.name in visible]
 
 
 mcp._mcp_server.list_tools()(_list_tools_for_client)
+
+
+async def _call_tool_for_profile(name: str, arguments: dict):
+    """Enforce profile at the protocol dispatch boundary, not only tools/list.
+
+    An MCP caller can send tools/call for a hidden tool by name. Filtering the
+    advertised list is not authorization. Only developer-local may call all
+    legacy tools; Studio has no mutation handlers before BAS-05.
+    """
+    allowed = exposed_legacy_tools(profile_from_env(), {name})
+    if name not in allowed:
+        raise PolicyDenied("permission_denied: tool is not allowed for this profile")
+    return await mcp.call_tool(name, arguments)
+
+
+mcp._mcp_server.call_tool(validate_input=False)(_call_tool_for_profile)
+
+
+def _can_read_legacy_resources():
+    return profile_from_env() in (
+        Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL
+    )
+
+
+async def _list_resources_for_profile():
+    if not _can_read_legacy_resources():
+        return []
+    return await mcp.list_resources()
+
+
+async def _list_resource_templates_for_profile():
+    if not _can_read_legacy_resources():
+        return []
+    return await mcp.list_resource_templates()
+
+
+async def _read_resource_for_profile(uri):
+    if not _can_read_legacy_resources():
+        raise PolicyDenied("permission_denied: resources not allowed for this profile")
+    return await mcp.read_resource(uri)
+
+
+mcp._mcp_server.list_resources()(_list_resources_for_profile)
+mcp._mcp_server.list_resource_templates()(_list_resource_templates_for_profile)
+mcp._mcp_server.read_resource()(_read_resource_for_profile)
 
 
 # Main execution

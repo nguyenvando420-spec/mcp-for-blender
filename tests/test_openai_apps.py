@@ -498,18 +498,45 @@ APP_TOOLS = {"search_mentions", "open_viewport", "viewport_latest", "viewport_ca
 
 
 def test_app_only_tools_are_hidden_from_clients_without_mcp_apps(monkeypatch):
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "developer-local")
+    monkeypatch.setenv("BLENDER_MCP_DEV_ACK", "I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON")
     monkeypatch.delenv(openai_apps.APPS_ENV, raising=False)
     names = _list_tools(monkeypatch, {})
     assert "execute_blender_code" in names
     assert not APP_TOOLS & set(names)
 
 
+def test_observer_does_not_advertise_raw_tools(monkeypatch):
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "observer")
+    monkeypatch.delenv("BLENDER_MCP_DEV_ACK", raising=False)
+    names = set(_list_tools(monkeypatch, MCP_APPS))
+    assert "execute_blender_code" not in names
+    assert "generate_3d" not in names
+    assert "get_scene_info" in names
+
+
 def test_app_only_tools_are_listed_for_mcp_apps_clients(monkeypatch):
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "developer-local")
+    monkeypatch.setenv("BLENDER_MCP_DEV_ACK", "I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON")
     monkeypatch.delenv(openai_apps.APPS_ENV, raising=False)
     assert APP_TOOLS <= set(_list_tools(monkeypatch, MCP_APPS))
 
 
+def test_hidden_tool_rejected_on_wire_in_observer_profile(monkeypatch):
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "observer")
+    async def step(send, _recv, _received, reply_to):
+        await send(JSONRPCRequest(jsonrpc="2.0", id=2, method="tools/call", params={
+            "name": "generate_3d", "arguments": {},
+        }))
+        reply = (await reply_to(2)).result
+        assert reply["isError"] is True
+        assert "permission_denied" in reply["content"][0]["text"]
+    asyncio.run(_exchange(monkeypatch, {}, [step]))
+
+
 def test_picker_round_trip_over_the_wire(monkeypatch):
+    monkeypatch.setenv("BLENDER_MCP_PROFILE", "developer-local")
+    monkeypatch.setenv("BLENDER_MCP_DEV_ACK", "I_ACCEPT_UNRESTRICTED_LOCAL_PYTHON")
     """The elicitation goes out as openai/elicitation/create, and the reply to it
     decides the tool result."""
     result = {}
