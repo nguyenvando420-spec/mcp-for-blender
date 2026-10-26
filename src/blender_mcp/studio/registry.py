@@ -7,7 +7,6 @@ authentication are intentionally NOT advertised as executable capabilities.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -57,7 +56,8 @@ class StudioGateway:
         advertised = set(info.get("capabilities") or [])
         available = {name for name, command in HANDLERS.items() if command in advertised}
         return Capabilities(addon_protocol=protocol, operations=available,
-                            features={"primitive-create-v1", "scene-inspect-v1"} if available else set())
+                            features=({"primitive-create-v1"} if "studio_create_object" in available else set())
+                            | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -69,7 +69,9 @@ class StudioGateway:
                 "addon_protocol": caps.addon_protocol,
                 "addon_version": info.get("addon_version"),
                 "blender_version": info.get("blender_version"),
-                "operations": sorted(caps.operations),
+                "operations": sorted(caps.operations & (
+                    {"studio_scene_inspect"} if self.policy.profile.value == "observer" else
+                    set(caps.operations))),
                 "features": sorted(caps.features),
                 "profile": self.policy.profile.value,
                 "python_executable": sys.executable,
@@ -168,5 +170,12 @@ class StudioGateway:
                 code = ErrorCode.INTERNAL
             return self._failed(raw, code, str(exc))
         except Exception as exc:
-            # Never echo arbitrary exception data or tracebacks to remote clients.
+            # Existing BlenderConnection wraps addon error messages in generic
+            # exceptions. Recover ONLY explicit fixed error markers, never
+            # reflect arbitrary details or tracebacks to a model.
+            message = str(exc)
+            if "stale_scene:" in message:
+                return self._failed(raw, ErrorCode.STALE_SCENE, "Scene revision mismatch")
+            if "conflict:" in message:
+                return self._failed(raw, ErrorCode.CONFLICT, "Idempotency key conflict")
             return self._failed(raw, ErrorCode.INTERNAL, type(exc).__name__)
