@@ -31,9 +31,9 @@ def test_defaults_when_nothing_is_configured():
 
 
 def test_environment_overrides_defaults(monkeypatch):
-    monkeypatch.setenv("BLENDER_HOST", "host.docker.internal")
+    monkeypatch.setenv("BLENDER_HOST", "127.0.0.2")
     monkeypatch.setenv("BLENDER_PORT", "9999")
-    assert resolve_connection() == ("host.docker.internal", 9999)
+    assert resolve_connection() == ("127.0.0.2", 9999)
 
 
 def test_cli_overrides_environment(monkeypatch):
@@ -45,9 +45,9 @@ def test_cli_overrides_environment(monkeypatch):
 def test_cli_host_and_port_override_independently(monkeypatch):
     # Targeting a second local instance means passing --port alone; the env
     # host must survive that, and vice versa.
-    monkeypatch.setenv("BLENDER_HOST", "10.0.0.5")
+    monkeypatch.setenv("BLENDER_HOST", "127.0.0.2")
     monkeypatch.setenv("BLENDER_PORT", "9999")
-    assert resolve_connection(cli_port=9877) == ("10.0.0.5", 9877)
+    assert resolve_connection(cli_port=9877) == ("127.0.0.2", 9877)
     assert resolve_connection(cli_host="localhost") == ("localhost", 9999)
 
 
@@ -96,3 +96,10 @@ def test_mistyped_flag_is_reported(caplog):
         host, port = parse_connection_args(["--prot", "9877"])
     assert (host, port) == (None, None)
     assert "--prot" in caplog.text
+
+
+def test_non_loopback_environment_is_denied(monkeypatch):
+    from blender_mcp.security_policy import PolicyDenied
+    monkeypatch.setenv("BLENDER_HOST", "host.docker.internal")
+    with pytest.raises(PolicyDenied):
+        resolve_connection()
