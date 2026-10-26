@@ -76,7 +76,7 @@ jobs:
           assert blend.read_bytes()[:7] == b"BLENDER", "Invalid .blend header"
           with png.open("rb") as f:
               header = f.read(24)
-          assert header[:8] == b"\\x89PNG\\r\\n\\x1a\\n", "Invalid PNG signature"
+          assert header[:8] == b"\x89PNG\r\n\x1a\n", "Invalid PNG signature"
           width, height = struct.unpack(">II", header[16:24])
           assert (width, height) == (320, 180), f"Bad render size: {width}x{height}"
           print(f"BAS01_ARTIFACTS_OK .blend={blend.stat().st_size}B png={png.stat().st_size}B {width}x{height}")
