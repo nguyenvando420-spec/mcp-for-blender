@@ -8,6 +8,7 @@ enforcement must be implemented at their respective runtime boundaries.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -17,8 +18,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import secrets
+import struct
 import time
 from urllib.parse import unquote, urlsplit
+from uuid import UUID
 
 from .studio.contracts import EffectScope, STUDIO_OPERATIONS, validate_request
 
@@ -130,12 +133,17 @@ def canonical_allowed_file(uri: str, roots: tuple[Path, ...], *, writing: bool,
         raise PolicyDenied("Absolute canonical path without traversal required")
     candidate = raw.resolve(strict=False)
     for configured in roots:
-        root = Path(configured).expanduser().resolve(strict=True)
-        if not root.is_dir() or not _under_root(candidate, root):
+        try:
+            root = Path(configured).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise PolicyDenied("Configured allowed root is invalid") from exc
+        # Require both the lexical and resolved path to be under the same root;
+        # a symlink OUTSIDE that points INTO the root is not authorized.
+        if not root.is_dir() or not _under_root(raw, root) or not _under_root(candidate, root):
             continue
         # Symlink in any component below the configured root is not trusted.
         cur = root
-        for part in raw.relative_to(root).parts if _under_root(raw, root) else ():
+        for part in raw.relative_to(root).parts:
             cur = cur / part
             if cur.is_symlink():
                 raise PolicyDenied("Symlink path component denied")
@@ -152,77 +160,102 @@ def canonical_allowed_file(uri: str, roots: tuple[Path, ...], *, writing: bool,
 
 def check_egress_url(url: str, allowed_hosts: frozenset[str]) -> str:
     """Preflight only; the fetcher must pin/check DNS, redirects, TLS and size."""
-    if len(url) > MAX_URL_LENGTH:
-        raise PolicyDenied("URL exceeds maximum length")
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
-        raise PolicyDenied("Only credential-free HTTPS URLs are permitted")
-    host = (parsed.hostname or "").lower().rstrip(".")
+    if not isinstance(url, str) or len(url) > MAX_URL_LENGTH:
+        raise PolicyDenied("URL exceeds maximum length or is not a string")
+    if any(c in url for c in ("\r", "\n", "\x00", "\\")):
+        raise PolicyDenied("Malformed network URL")
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
+            raise PolicyDenied("Only credential-free HTTPS URLs are permitted")
+        host = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError as exc:
+        raise PolicyDenied("Invalid network authority or port") from exc
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
         raise PolicyDenied("IP literal network destinations are denied")
-    if not host or host not in allowed_hosts or parsed.port not in (None, 443):
+    if not host or host not in allowed_hosts or port not in (None, 443):
         raise PolicyDenied("URL destination is not on egress allowlist")
-    if not parsed.netloc or any(c in url for c in ("\r", "\n", "\x00", "\\")):
+    if not parsed.netloc:
         raise PolicyDenied("Malformed network URL")
     return url
 
 
-def _confirmation_payload(operation: str, scene_id: str, revision: int,
-                          snapshot_id: str | None, expires_at: int,
-                          nonce: str) -> bytes:
-    data = {
-        "operation": operation,
-        "scene_id": scene_id,
-        "scene_revision": revision,
-        "snapshot_id": snapshot_id,
-        "expires_at": expires_at,
-        "nonce": nonce,
-    }
-    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+# Compact binary tokens fit the v1 contract's 256-character NonEmpty field.
+# Layout: operation(1), scene UUID(16), revision(8), snapshot UUID(16),
+# expiry(8), random nonce(16), HMAC-SHA256(32). BASE64URL output = 130 chars.
+_TOKEN_STRUCT = struct.Struct("!B16sQ16sQ16s")
+_CONFIRM_CODES = {
+    "studio_scene_open": 1,
+    "studio_scene_restore": 2,
+    "studio_delete_object": 3,
+    "studio_scene_save": 4,
+}
+
+
+def _confirmation_fields(operation: str, scene_id: str, scene_revision: int,
+                         snapshot_id: str | None) -> tuple[int, bytes, int, bytes]:
+    try:
+        code = _CONFIRM_CODES[operation]
+        if not (0 <= scene_revision < 2**64):
+            raise ValueError("Invalid scene revision")
+        if operation != "studio_scene_save" and snapshot_id is None:
+            raise ValueError("Snapshot required")
+        if operation == "studio_scene_save" and snapshot_id is not None:
+            raise ValueError("Unexpected snapshot")
+        return (code, UUID(scene_id).bytes, scene_revision,
+                UUID(snapshot_id).bytes if snapshot_id else bytes(16))
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise PolicyDenied("Invalid operation, scene or snapshot binding") from exc
 
 
 def issue_confirmation(secret: bytes, *, operation: str, scene_id: str,
                        scene_revision: int, snapshot_id: str | None = None,
                        now: int | None = None) -> str:
-    """For trusted user-confirmation UI only. Never let the model mint its own token."""
-    if len(secret) < 32 or operation not in (CONFIRM_OPERATIONS | {"studio_scene_save"}):
-        raise PolicyDenied("Invalid confirmation issuer configuration")
+    """Trusted UI/backend only: user confirmation must precede issuance."""
+    if len(secret) < 32:
+        raise PolicyDenied("Invalid confirmation issuer key")
+    fields = _confirmation_fields(operation, scene_id, scene_revision, snapshot_id)
     timestamp = int(time.time()) if now is None else now
-    payload = _confirmation_payload(
-        operation, scene_id, scene_revision, snapshot_id,
-        timestamp + MAX_CONFIRMATION_AGE_SECONDS, secrets.token_hex(16)
-    )
-    signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
-    return base64.urlsafe_b64encode(payload).decode().rstrip("=") + "." + signature
+    try:
+        payload = _TOKEN_STRUCT.pack(
+            fields[0], fields[1], fields[2], fields[3],
+            timestamp + MAX_CONFIRMATION_AGE_SECONDS, secrets.token_bytes(16)
+        )
+    except (struct.error, OverflowError, ValueError) as exc:
+        raise PolicyDenied("Invalid confirmation timestamp") from exc
+    signature = hmac.new(secret, payload, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(payload + signature).decode("ascii").rstrip("=")
 
 
 def verify_confirmation(secret: bytes, token: str, *, operation: str, scene_id: str,
                         scene_revision: int, snapshot_id: str | None = None,
                         now: int | None = None) -> None:
-    if len(secret) < 32 or len(token) > 1024:
+    if len(secret) < 32 or not isinstance(token, str) or len(token) > 256:
         raise PolicyDenied("Invalid confirmation key/token")
+    expected = _confirmation_fields(operation, scene_id, scene_revision, snapshot_id)
     try:
-        part, signature = token.split(".", 1)
-        payload = base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
-        if not hmac.compare_digest(hmac.new(secret, payload, hashlib.sha256).hexdigest(), signature):
+        decoded = base64.b64decode(
+            token + "=" * (-len(token) % 4), altchars=b"-_", validate=True
+        )
+        if len(decoded) != _TOKEN_STRUCT.size + 32:
+            raise ValueError("Invalid token size")
+        payload, signature = decoded[:-32], decoded[-32:]
+        if not hmac.compare_digest(hmac.new(secret, payload, hashlib.sha256).digest(), signature):
             raise ValueError("MAC mismatch")
-        data = json.loads(payload)
-        expected = {
-            "operation": operation, "scene_id": scene_id,
-            "scene_revision": scene_revision, "snapshot_id": snapshot_id,
-        }
-        if any(data.get(k) != v for k, v in expected.items()):
+        code, scene, revision, snapshot, expiration, nonce = _TOKEN_STRUCT.unpack(payload)
+        if (code, scene, revision, snapshot) != expected:
             raise ValueError("Bound operation/scene mismatch")
         timestamp = int(time.time()) if now is None else now
-        if not (timestamp < data["expires_at"] <= timestamp + MAX_CONFIRMATION_AGE_SECONDS):
+        if not (timestamp < expiration <= timestamp + MAX_CONFIRMATION_AGE_SECONDS):
             raise ValueError("Expired or future confirmation")
-        if not isinstance(data.get("nonce"), str) or len(data["nonce"]) != 32:
+        if not any(nonce):
             raise ValueError("Missing nonce")
-    except (ValueError, TypeError, KeyError, UnicodeError, OverflowError) as exc:
+    except (ValueError, TypeError, binascii.Error, struct.error, OverflowError) as exc:
         raise PolicyDenied("Confirmation invalid, stale or not bound to scene") from exc
 
 
