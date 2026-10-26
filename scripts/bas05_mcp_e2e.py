@@ -99,6 +99,41 @@ async def accept(port, record):
                 "spec": {"kind": "primitive", "primitive": "arbitrary-python"},
             }}))
             assert invalid["status"] == "failed" and invalid["error"]["code"] == "invalid_input", invalid
+            # BAS-06: 50 additional scene creates and 50 scene reads through
+            # the real MCP client -> Blender GUI queue (100 sequential calls).
+            stress_started = time.monotonic()
+            stress_count = 0
+            for index in range(50):
+                obj_name = f"BAS06_Stress_{index:02d}"
+                request = {
+                    "operation": "studio_create_object",
+                    "request_id": str(uuid4()),
+                    "effect_scope": "scene",
+                    "scene_id": sid,
+                    "scene_revision": rev + 1 + index,
+                    "idempotency_key": f"bas06-stress-{index:02d}",
+                    "name": obj_name,
+                    "spec": {"kind": "primitive", "primitive": "cube"},
+                }
+                created = unpack(await client.call_tool("studio_create_object", {"request": request}))
+                assert created["status"] == "succeeded", (index, created)
+                assert created["scene_revision"] == rev + 2 + index, (index, created)
+                stress_count += 1
+                seen = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                    "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                    "effect_scope": "read", "limit": 100,
+                }}))
+                assert seen["status"] == "succeeded", (index, seen)
+                assert seen["scene_revision"] == rev + 2 + index, (index, seen)
+                objects = json.loads(seen["result"]["summary"])["objects"]
+                assert any(obj["name"] == obj_name for obj in objects), (index, obj_name)
+                stress_count += 1
+            assert stress_count == 100
+            record["bas06_stress"] = {
+                "requests": stress_count, "creates": 50, "inspects": 50,
+                "elapsed_seconds": round(time.monotonic() - stress_started, 3),
+                "last_revision": rev + 51,
+            }
             record.update({"handshake": handshake, "scene_id": sid,
                            "initial_revision": rev, "new_revision": made["scene_revision"],
                            "object_id": oid, "object_name": "BAS05_Cube",
@@ -156,6 +191,10 @@ def main():
         blend = output / "bas05-scene.blend"
         assert blend.is_file() and blend.stat().st_size > 1000
         record["scene_blend_sha256"] = hashlib.sha256(blend.read_bytes()).hexdigest()
+        heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
+        assert heartbeat["count"] >= 10, heartbeat
+        assert heartbeat["max_gap_seconds"] < 2.0, heartbeat
+        record["bas06_heartbeat"] = heartbeat
         record["passed"] = True
         (output / "bas05-e2e.json").write_text(json.dumps(record, indent=2) + "\n")
         print("BAS05_MCP_GUI_E2E_OK", record["source_commit"], flush=True)

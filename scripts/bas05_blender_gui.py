@@ -19,6 +19,17 @@ addon.register()
 bpy.context.scene.blendermcp_auto_start_server = False
 server = addon.BlenderMCPServer(host="127.0.0.1", port=port)
 server.start()
+heartbeat = {"count": 0, "last": None, "max_gap_seconds": 0.0}
+def _bas06_heartbeat():
+    import time
+    now = time.monotonic()
+    if heartbeat["last"] is not None:
+        heartbeat["max_gap_seconds"] = max(
+            heartbeat["max_gap_seconds"], now - heartbeat["last"])
+    heartbeat["last"] = now
+    heartbeat["count"] += 1
+    return 0.1
+bpy.app.timers.register(_bas06_heartbeat, first_interval=0.1)
 if not server.running:
     raise RuntimeError("BAS05 real Blender GUI bridge did not start")
 bpy.types.blendermcp_server = server
@@ -29,6 +40,11 @@ def finish_when_requested():
         return 0.2
     try:
         result = bpy.ops.wm.save_as_mainfile(filepath=str(output_dir / "bas05-scene.blend"))
+        import json
+        (output_dir / "bas06-heartbeat.json").write_text(json.dumps({
+            "count": heartbeat["count"],
+            "max_gap_seconds": round(heartbeat["max_gap_seconds"], 4)
+        }, indent=2) + "\n")
         print("BAS05_GUI_SAVE", result, flush=True)
         server.stop()
         bpy.ops.wm.quit_blender()

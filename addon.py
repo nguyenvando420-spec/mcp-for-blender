@@ -1445,6 +1445,14 @@ class BlenderMCPServer:
                 # Accept new connection
                 try:
                     client, address = self.socket.accept()
+                    with self._clients_lock:
+                        if len(self._clients) >= self.MAX_CLIENTS:
+                            try:
+                                client.sendall(json.dumps(self._error("too_many_clients")).encode())
+                            finally:
+                                client.close()
+                            continue
+                        self._clients.add(client)
                     print(f"Connected to client: {address}")
 
                     # Handle client in a separate thread
@@ -1486,10 +1494,7 @@ class BlenderMCPServer:
                 "request_id": request_id}
 
     def _receive_command(self, client, raw):
-        """Untrusted socket thread: validation, authentication and backpressure.
-
-        Never access bpy, and never call bpy.app.timers here.
-        """
+        """Validate auth, fingerprint and admission atomically off Blender thread."""
         try:
             command = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeError):
@@ -1514,33 +1519,40 @@ class BlenderMCPServer:
         if not allowed:
             client.sendall(json.dumps(self._error(denial, rid)).encode("utf-8"))
             return True
-        if rid is not None:
-            with self._requests_lock:
-                old = self._requests.get(rid)
-                if old is not None:
-                    response = old.get("response") or {
-                        "status": "pending", "request_id": rid, "state": old["state"],
-                    }
-                else:
-                    response = None
-            if response is not None:
-                client.sendall(json.dumps(response).encode("utf-8"))
-                return True
-        try:
-            self.command_queue.put_nowait((command, client))
-        except queue.Full:
-            client.sendall(json.dumps(self._error("queue_full", rid)).encode("utf-8"))
+        if rid is None and kind not in self.READ_COMMANDS:
+            client.sendall(json.dumps(self._error("request_id_required")).encode("utf-8"))
             return True
-        if rid is not None:
-            with self._requests_lock:
-                # Bounded recovery ledger; completed entries are evicted first.
-                if len(self._requests) >= self.MAX_REQUESTS:
-                    for key, value in list(self._requests.items()):
-                        if value["state"] == "completed":
-                            del self._requests[key]
-                            break
-                if len(self._requests) < self.MAX_REQUESTS:
-                    self._requests[rid] = {"state": "queued", "response": None}
+        fingerprint = hashlib.sha256(json.dumps(
+            command, sort_keys=True, ensure_ascii=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        reply = None
+        with self._requests_lock:
+            previous = self._requests.get(rid) if rid is not None else None
+            if previous is not None:
+                if previous["fingerprint"] != fingerprint:
+                    reply = self._error("request_id_conflict", rid)
+                else:
+                    reply = previous.get("response") or {
+                        "status": "pending", "request_id": rid,
+                        "state": previous["state"],
+                    }
+            elif rid is not None and len(self._requests) >= self.MAX_REQUESTS:
+                # Never evict known mutations: otherwise a stale retry could
+                # execute a duplicated side effect after losing its identity.
+                reply = self._error("request_ledger_full", rid)
+            else:
+                try:
+                    self.command_queue.put_nowait((command, client))
+                except queue.Full:
+                    reply = self._error("queue_full", rid)
+                else:
+                    if rid is not None:
+                        self._requests[rid] = {
+                            "state": "queued", "fingerprint": fingerprint,
+                            "response": None,
+                        }
+        if reply is not None:
+            client.sendall(json.dumps(reply).encode("utf-8"))
         return True
 
     def _drain_command_queue(self):
@@ -1565,7 +1577,8 @@ class BlenderMCPServer:
                     lookup_id = command["params"].get("request_id")
                     with self._requests_lock:
                         entry = self._requests.get(lookup_id)
-                        result = dict(entry) if entry else {"state": "unknown"}
+                        result = {"state": entry["state"],
+                                  "response": entry.get("response")} if entry else {"state": "unknown"}
                     response = {"status": "success", "result": result}
                 else:
                     response = self.execute_command(command)
@@ -1580,8 +1593,11 @@ class BlenderMCPServer:
                     if rid in self._requests:
                         # A large snapshot is not retained in the recovery ledger.
                         packed = json.dumps(response)
-                        self._requests[rid] = {"state": "completed",
-                                               "response": response if len(packed) <= 16384 else None}
+                        self._requests[rid].update({
+                            "state": "completed",
+                            "response": response if len(packed) <= 16384
+                                        else self._error("response_too_large", rid),
+                        })
             with self._clients_lock:
                 writer = self._responses.get(client)
             if writer is not None:

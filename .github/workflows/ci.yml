@@ -69,13 +69,13 @@ jobs:
         run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden"
       - name: Verify evidence bundle
         run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
-      - name: BAS-05 real MCP client -> Blender 4.5.15 GUI (Xvfb)
+      - name: BAS-05/BAS-06 MCP GUI E2E + 100-command stress (Xvfb)
         run: uv run --frozen python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
       - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bas02-bas05-blender-evidence
+          name: bas02-bas06-blender-evidence
           path: |
             ${{ runner.temp }}/blender-golden
             ${{ runner.temp }}/bas05-mcp-gui
