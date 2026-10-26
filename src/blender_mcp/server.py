@@ -2359,6 +2359,18 @@ def studio_create_object(request: dict) -> dict:
     """Create a bounded primitive using a typed BAS-03 CreateObject JSON envelope."""
     return _studio_gateway().invoke(request, "studio_create_object")
 
+@mcp.tool()
+def studio_set_transform(request: dict) -> dict:
+    """Typed transform, rename, duplicate by UUID with bounded values."""
+    return _studio_gateway().invoke(request, "studio_set_transform")
+
+
+@mcp.tool()
+def studio_manage_collection(request: dict) -> dict:
+    """Typed collection create, rename and object move by UUID."""
+    return _studio_gateway().invoke(request, "studio_manage_collection")
+
+
 
 # Main execution
 
