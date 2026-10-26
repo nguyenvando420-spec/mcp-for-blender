@@ -45,6 +45,11 @@ def main() -> None:
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
     scene.cycles.samples = 8
+    # Ubuntu's Blender packages can be built without OpenImageDenoiser.
+    # Disable Cycles per-view-layer denoising for portable CPU headless CI.
+    for view_layer in scene.view_layers:
+        if hasattr(view_layer, "cycles"):
+            view_layer.cycles.use_denoising = False
     scene.render.resolution_x = 320
     scene.render.resolution_y = 180
     scene.render.resolution_percentage = 100
