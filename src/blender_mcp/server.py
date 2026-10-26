@@ -2238,9 +2238,9 @@ async def _list_tools_for_client():
     try:
         session = mcp.get_context().session
     except Exception:
-        # No session is available during local introspection/tests, not a trust grant.
-        # Actual MCP clients receive a profile-filtered advertised tool list.
-        return tools
+        # Fail closed even during local introspection if the session is missing.
+        visible = exposed_legacy_tools(profile_from_env(), {t.name for t in tools})
+        return [t for t in tools if t.name in visible and not is_app_only(t)]
     _log_client_features(session)
     profile = profile_from_env()
     visible = exposed_legacy_tools(profile, {t.name for t in tools})
