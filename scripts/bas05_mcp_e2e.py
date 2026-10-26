@@ -65,7 +65,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert handshake["operations"] == ["studio_create_object", "studio_scene_inspect"]
+            assert {"studio_create_object", "studio_scene_inspect", "studio_set_transform", "studio_manage_collection"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
