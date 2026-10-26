@@ -20,7 +20,7 @@ from .contracts import (
 )
 from ..security_policy import Policy, PolicyDenied, authorize_studio_request
 
-ADDON_PROTOCOL_MIN = 16
+ADDON_PROTOCOL_MIN = 15
 # Operation -> command implemented in the paired BAS-05 Blender addon.
 HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
