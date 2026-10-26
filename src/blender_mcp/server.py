@@ -2239,11 +2239,14 @@ async def _list_tools_for_client():
         session = mcp.get_context().session
     except Exception:
         # Fail closed even during local introspection if the session is missing.
-        visible = exposed_legacy_tools(profile_from_env(), {t.name for t in tools})
+        from .studio.registry import visible_studio_tools
+        profile = profile_from_env()
+        visible = exposed_legacy_tools(profile, {t.name for t in tools}) | visible_studio_tools(profile)
         return [t for t in tools if t.name in visible and not is_app_only(t)]
     _log_client_features(session)
     profile = profile_from_env()
-    visible = exposed_legacy_tools(profile, {t.name for t in tools})
+    from .studio.registry import visible_studio_tools
+    visible = exposed_legacy_tools(profile, {t.name for t in tools}) | visible_studio_tools(profile)
     if not supports_apps(session):
         return [t for t in tools if t.name in visible and not is_app_only(t)]
     return [t for t in tools if t.name in visible]
@@ -2259,7 +2262,9 @@ async def _call_tool_for_profile(name: str, arguments: dict):
     advertised list is not authorization. Only developer-local may call all
     legacy tools; Studio has no mutation handlers before BAS-05.
     """
-    allowed = exposed_legacy_tools(profile_from_env(), {name})
+    from .studio.registry import visible_studio_tools
+    profile = profile_from_env()
+    allowed = exposed_legacy_tools(profile, {name}) | visible_studio_tools(profile)
     if name not in allowed:
         raise PolicyDenied("permission_denied: tool is not allowed for this profile")
     return await mcp.call_tool(name, arguments)
@@ -2295,6 +2300,36 @@ async def _read_resource_for_profile(uri):
 mcp._mcp_server.list_resources()(_list_resources_for_profile)
 mcp._mcp_server.list_resource_templates()(_list_resource_templates_for_profile)
 mcp._mcp_server.read_resource()(_read_resource_for_profile)
+
+
+
+# BAS-05: small, bounded typed Studio surface, separate from legacy tools.
+def _studio_gateway():
+    from .studio.registry import StudioGateway
+    from .security_policy import Policy
+
+    def _bridge(command, params, read_only):
+        return get_blender_connection().send_command(command, params, read_only=read_only)
+
+    return StudioGateway(_bridge, Policy(profile_from_env()))
+
+
+@mcp.tool()
+def studio_handshake() -> dict:
+    """Discover BAS-03 Studio v1 operations, add-on protocol and checkout provenance."""
+    return _studio_gateway().handshake()
+
+
+@mcp.tool()
+def studio_scene_inspect(request: dict) -> dict:
+    """Typed Studio v1 scene inspect. Supply a BAS-03 SceneInspect JSON envelope."""
+    return _studio_gateway().invoke(request, "studio_scene_inspect")
+
+
+@mcp.tool()
+def studio_create_object(request: dict) -> dict:
+    """Create a bounded primitive using a typed BAS-03 CreateObject JSON envelope."""
+    return _studio_gateway().invoke(request, "studio_create_object")
 
 
 # Main execution

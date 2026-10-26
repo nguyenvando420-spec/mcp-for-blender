@@ -4,6 +4,7 @@ import re
 import textwrap
 import bpy
 import mathutils
+import math
 import json
 import threading
 import socket
@@ -1536,6 +1537,8 @@ class BlenderMCPServer:
         # Base handlers that are always available
         handlers = {
             "get_scene_info": self.get_scene_info,
+            "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
+            "studio_create_object_v1": self.studio_create_object_v1,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1643,6 +1646,8 @@ class BlenderMCPServer:
             "protocol_version": ADDON_PROTOCOL_VERSION,
             "capabilities": sorted([
                 "get_scene_info",
+                "studio_scene_inspect_v1",
+                "studio_create_object_v1",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -1659,6 +1664,81 @@ class BlenderMCPServer:
             "blender_version": bpy.app.version_string,
             "premium_generators": premium_enabled_generators(),
         }
+
+
+    def _studio_scene_context_v1(self):
+        """Provisional scene revision source; BAS-08 will track user edits too."""
+        scene = bpy.context.scene
+        scene_id = scene.get("_bas05_scene_id")
+        try:
+            uuid.UUID(str(scene_id))
+        except (TypeError, ValueError, AttributeError):
+            scene_id = str(uuid.uuid4())
+            scene["_bas05_scene_id"] = scene_id
+        revision = int(scene.get("_bas05_scene_revision", 0))
+        return scene, str(scene_id), revision
+
+    def studio_scene_inspect_v1(self, query="", limit=20):
+        """Never use a Python/script bridge for Studio observation."""
+        if not isinstance(query, str) or len(query) > 4096:
+            raise ValueError("invalid_input: invalid scene query")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("invalid_input: limit out of range")
+        scene, scene_id, revision = self._studio_scene_context_v1()
+        matches = [obj for obj in scene.objects if query.lower() in obj.name.lower()]
+        return {
+            "scene_id": scene_id, "scene_revision": revision,
+            "name": scene.name, "object_count": len(scene.objects),
+            "objects": [{"name": obj.name, "type": obj.type,
+                         "object_id": obj.get("_bas05_object_id")} for obj in matches[:limit]],
+        }
+
+    def studio_create_object_v1(self, scene_id, scene_revision, idempotency_key,
+                                name, primitive, location):
+        """Main-thread-only primitive handler, no eval/exec or general bpy surface."""
+        if primitive not in ("cube", "sphere", "cylinder", "cone", "plane"):
+            raise ValueError("invalid_input: unsupported primitive")
+        if not isinstance(name, str) or not 1 <= len(name) <= 256:
+            raise ValueError("invalid_input: invalid name")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise ValueError("invalid_input: invalid idempotency key")
+        if (not isinstance(location, (list, tuple)) or len(location) != 3
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in location)):
+            raise ValueError("invalid_input: invalid location")
+        scene, current_id, revision = self._studio_scene_context_v1()
+        payload = json.dumps([scene_id, scene_revision, name, primitive, location],
+                             separators=(",", ":"), sort_keys=True)
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        cache = json.loads(scene.get("_bas05_idempotency_cache", "{}"))
+        if idempotency_key in cache:
+            saved = cache[idempotency_key]
+            if saved["digest"] != digest:
+                raise ValueError("conflict: idempotency key reused with new payload")
+            return dict(saved["reply"], replayed=True)
+        if str(scene_id) != current_id or type(scene_revision) is not int or scene_revision != revision:
+            raise ValueError("stale_scene: scene UUID/revision mismatch")
+        builders = {
+            "cube": bpy.ops.mesh.primitive_cube_add,
+            "sphere": bpy.ops.mesh.primitive_uv_sphere_add,
+            "cylinder": bpy.ops.mesh.primitive_cylinder_add,
+            "cone": bpy.ops.mesh.primitive_cone_add,
+            "plane": bpy.ops.mesh.primitive_plane_add,
+        }
+        builders[primitive](location=tuple(float(v) for v in location))
+        obj = bpy.context.object
+        obj.name = name
+        obj_id = str(uuid.uuid4())
+        obj["_bas05_object_id"] = obj_id
+        revision += 1
+        scene["_bas05_scene_revision"] = revision
+        reply = {"scene_id": current_id, "scene_revision": revision,
+                 "object_id": obj_id, "name": obj.name}
+        cache[idempotency_key] = {"digest": digest, "reply": reply}
+        # Keep Blender scene metadata finite; durable job-level reservations are BAS-12.
+        if len(cache) > 128:
+            cache.pop(next(iter(cache)))
+        scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        return reply
 
     def get_scene_info(self):
         """Get information about the current Blender scene"""
