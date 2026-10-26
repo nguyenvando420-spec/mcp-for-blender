@@ -295,5 +295,5 @@ def test_bas07_missing_object_and_delete_fail_closed():
         bridge, "studio_delete_object", "delete", object_id=str(uuid4()),
         snapshot_id=str(uuid4()), confirmation_token="invalid"),
         "studio_delete_object")
-    assert delete["error"]["code"] == "capability_unavailable"
+    assert delete["error"]["code"] == "permission_denied"
     assert not any(cmd == "studio_delete_object_v1" for cmd, _, _ in bridge.calls)
