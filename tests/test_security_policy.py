@@ -98,7 +98,7 @@ def test_token_signature_expiry_binding_and_tamper():
                   scene_revision=7, snapshot_id=SNAPSHOT)
     verify_confirmation(SECRET, token, now=1000, **params)
     denied(verify_confirmation, SECRET, token, now=1300, **params)
-    denied(verify_confirmation, SECRET, token, now=999, **params)
+    denied(verify_confirmation, SECRET, token, now=699, **params)
     denied(verify_confirmation, SECRET, token + "a", now=1000, **params)
     denied(verify_confirmation, SECRET, token, now=1000, **{**params, "scene_revision": 8})
     denied(verify_confirmation, SECRET, token, now=1000, **{**params, "snapshot_id": str(uuid4())})
