@@ -33,7 +33,7 @@
 - Đã xác nhận tĩnh cấu trúc, config, commit, hash addon qua GitHub connector.
 - CI được định nghĩa trong .github/workflows/ci.yml: compile, lint thay đổi mới, tests toàn bộ, CLI help, build sdist/wheel.
 - Workflow headless smoke chạy thủ công qua workflow_dispatch để tránh tải Blender nặng trên mọi PR.
-- Những mục **chưa xác minh** tại thời điểm viết tài liệu: CI chạy xanh, headless render trên Ubuntu/Colab, kết nối GUI với Claude/Codex, hành vi sau cài đặt trên máy thật. Không đánh dấu BAS-01 Done trước khi có bằng chứng.
+- Những mục **chưa xác minh** tại thời điểm viết tài liệu: CI chạy xanh, headless render trên Ubuntu, kết nối GUI với Claude/Codex, hành vi sau cài đặt trên máy thật. Không đánh dấu BAS-01 Done trước khi có bằng chứng.
 
 ## Release gate
 

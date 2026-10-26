@@ -4,7 +4,7 @@ Tài liệu này dành cho fork [nguyenvando420-spec/mcp-for-blender](https://gi
 
 ## 1. Clone và chạy bằng local checkout
 
-Yêu cầu: Git, uv và Python 3.12.14 (theo .python-version, cập nhật BAS-02). Lệnh bên dưới dùng trên Linux/macOS; Windows chưa được nghiệm thu. Runtime Blender và golden smoke: xem [BAS-02-runtime.md](BAS-02-runtime.md); Colab ở đó là quy trình tùy chọn chưa nghiệm thu.
+Yêu cầu: Git, uv và Python 3.12.14 (theo .python-version, cập nhật BAS-02). Lệnh bên dưới dùng trên Linux/macOS; Windows chưa được nghiệm thu. Runtime Blender và golden smoke: xem [BAS-02-runtime.md](BAS-02-runtime.md).
 
 ~~~bash
 git clone https://github.com/nguyenvando420-spec/mcp-for-blender.git
@@ -45,7 +45,7 @@ CI chạy các lệnh này trên Python 3.11.14 và 3.12.14 (truyền `--python`
 blender --background --factory-startup --python scripts/blender_headless_smoke.py -- --output-dir artifacts/bas01
 ~~~
 
-Kỳ vọng: ghi `BAS01_SMOKE_OK` và artifact `baseline.blend`, `preview.png`. BAS-02 dùng `uv run --frozen python scripts/run_golden.py --output-dir artifacts/bas02-run-1` để tải Blender pin, render và mở lại BLEND. Job PR/manual **Fork baseline CI** dùng cùng runner. Chạy headless này độc lập với Add-on GUI; Colab không thay thế kiểm thử GUI.
+Kỳ vọng: ghi `BAS01_SMOKE_OK` và artifact `baseline.blend`, `preview.png`. BAS-02 dùng `uv run --frozen python scripts/run_golden.py --output-dir artifacts/bas02-run-1` để tải Blender pin, render và mở lại BLEND. Job PR/manual **Fork baseline CI** dùng cùng runner. Chạy headless này độc lập với Add-on GUI.
 
 ## 4. Đồng bộ upstream và phát triển tính năng
 
