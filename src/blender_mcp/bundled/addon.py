@@ -1489,7 +1489,7 @@ class BlenderMCPServer:
             return True, ""
         if cmd_type in self.READ_COMMANDS:
             return True, ""
-        if self.profile == "studio-local" and cmd_type == "studio_create_object_v1":
+        if self.profile == "studio-local" and cmd_type in ("studio_create_object_v1", "studio_create_text_v1", "studio_set_transform_v1", "studio_manage_collection_v1"):
             return True, ""
         return False, "permission_denied"
 
@@ -1701,6 +1701,9 @@ class BlenderMCPServer:
             "get_scene_info": self.get_scene_info,
             "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
             "studio_create_object_v1": self.studio_create_object_v1,
+            "studio_create_text_v1": self.studio_create_text_v1,
+            "studio_set_transform_v1": self.studio_set_transform_v1,
+            "studio_manage_collection_v1": self.studio_manage_collection_v1,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1810,6 +1813,9 @@ class BlenderMCPServer:
                 "get_scene_info",
                 "studio_scene_inspect_v1",
                 "studio_create_object_v1",
+                "studio_create_text_v1",
+                "studio_set_transform_v1",
+                "studio_manage_collection_v1",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -1901,6 +1907,188 @@ class BlenderMCPServer:
             cache.pop(next(iter(cache)))
         scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
         return reply
+
+    # BAS-07: all helpers execute on the GUI main-thread queue, never socket IO.
+    @staticmethod
+    def _bas07_vec(values, label, limit):
+        if values is None:
+            return None
+        if not isinstance(values, (list, tuple)) or len(values) != 3:
+            raise ValueError("invalid_input: " + label)
+        if any(type(v) not in (float, int) or not math.isfinite(v)
+               or abs(v) > limit for v in values):
+            raise ValueError("invalid_input: " + label)
+        if label == "scale" and any(v <= 0 for v in values):
+            raise ValueError("invalid_input: scale")
+        return tuple(float(v) for v in values)
+
+    @staticmethod
+    def _bas07_uuid(value):
+        try:
+            return str(uuid.UUID(value))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid_input: malformed UUID")
+
+    @staticmethod
+    def _bas07_name(value):
+        if not isinstance(value, str) or not 1 <= len(value) <= 256:
+            raise ValueError("invalid_input: name")
+        return value
+
+    def _bas07_find(self, scene, obj_id, collections=False):
+        key = "_bas07_collection_id" if collections else "_bas05_object_id"
+        target = self._bas07_uuid(obj_id)
+        items = (bpy.data.collections if collections else scene.objects)
+        matches = [item for item in items if item.get(key) == target]
+        if len(matches) != 1:
+            # Ambiguity is a conflict, never silently edit the first match.
+            raise ValueError("conflict: duplicate UUID" if matches else
+                             "object_not_found: UUID is absent")
+        return matches[0]
+
+    def _bas07_execute(self, operation, scene_id, scene_revision,
+                       idempotency_key, payload, callback):
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise ValueError("invalid_input: idempotency key")
+        scene, sid, rev = self._studio_scene_context_v1()
+        normalized = json.dumps([operation, scene_id, scene_revision, payload],
+                                sort_keys=True, separators=(",", ":"), allow_nan=False)
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        cache = json.loads(scene.get("_bas05_idempotency_cache", "{}"))
+        if idempotency_key in cache:
+            item = cache[idempotency_key]
+            if item["digest"] != digest:
+                raise ValueError("conflict: idempotency key reused")
+            return dict(item["reply"], replayed=True)
+        if scene_id != sid or type(scene_revision) is not int or rev != scene_revision:
+            raise ValueError("stale_scene: revision mismatch")
+        # Validate all inputs/targets before callback mutates bpy.
+        obj_id, name = callback(scene)
+        reply = {"scene_id": sid, "scene_revision": rev + 1,
+                 "object_id": obj_id, "name": name}
+        cache[idempotency_key] = {"digest": digest, "reply": reply}
+        if len(cache) > 128:
+            cache.pop(next(iter(cache)))
+        scene["_bas05_scene_revision"] = rev + 1
+        scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        return reply
+
+    def studio_create_text_v1(self, scene_id, scene_revision, idempotency_key,
+                              name, text, location):
+        name = self._bas07_name(name)
+        if not isinstance(text, str) or not 1 <= len(text) <= 4096:
+            raise ValueError("invalid_input: text")
+        loc = self._bas07_vec(location, "location", 100000.0)
+        if loc is None:
+            raise ValueError("invalid_input: location")
+        def apply(scene):
+            curve = bpy.data.curves.new(name=name + "_Font", type="FONT")
+            try:
+                curve.body = text
+                obj = bpy.data.objects.new(name, curve)
+                scene.collection.objects.link(obj)
+            except Exception:
+                if curve.users == 0:
+                    bpy.data.curves.remove(curve)
+                raise
+            oid = str(uuid.uuid4())
+            obj["_bas05_object_id"] = oid
+            obj.location = loc
+            return oid, obj.name
+        return self._bas07_execute("create_text", scene_id, scene_revision,
+                                   idempotency_key, [name, text, loc], apply)
+
+    def studio_set_transform_v1(self, scene_id, scene_revision, idempotency_key,
+                                object_id, action, name=None, location=None,
+                                rotation_euler=None, scale=None):
+        target = self._bas07_uuid(object_id)
+        loc = self._bas07_vec(location, "location", 100000.0)
+        rot = self._bas07_vec(rotation_euler, "rotation_euler", 1000.0)
+        scl = self._bas07_vec(scale, "scale", 1000.0)
+        if action == "transform":
+            if all(v is None for v in (loc, rot, scl)) or name is not None:
+                raise ValueError("invalid_input: transform")
+        elif action in ("rename", "duplicate"):
+            name = self._bas07_name(name)
+            if any(v is not None for v in (loc, rot, scl)):
+                raise ValueError("invalid_input: name action")
+        else:
+            raise ValueError("invalid_input: unknown transform action")
+        def apply(scene):
+            obj = self._bas07_find(scene, target)
+            if action == "duplicate":
+                copy = obj.copy()
+                if obj.data:
+                    copy.data = obj.data.copy()
+                # Object-copy transfers custom UUID; overwrite before linking.
+                oid = str(uuid.uuid4())
+                copy["_bas05_object_id"] = oid
+                copy.name = name
+                try:
+                    scene.collection.objects.link(copy)
+                except Exception:
+                    bpy.data.objects.remove(copy, do_unlink=True)
+                    raise
+                return oid, copy.name
+            if action == "rename":
+                obj.name = name
+            else:
+                if loc is not None:
+                    obj.location = loc
+                if rot is not None:
+                    obj.rotation_euler = rot
+                if scl is not None:
+                    obj.scale = scl
+            return target, obj.name
+        return self._bas07_execute("set_transform", scene_id, scene_revision,
+                                   idempotency_key,
+                                   [target, action, name, loc, rot, scl], apply)
+
+    def studio_manage_collection_v1(self, scene_id, scene_revision,
+                                    idempotency_key, action, name=None,
+                                    collection_id=None, object_id=None):
+        if action == "create":
+            name = self._bas07_name(name)
+            if collection_id is not None or object_id is not None:
+                raise ValueError("invalid_input: collection create")
+        elif action == "rename":
+            name = self._bas07_name(name)
+            collection_id = self._bas07_uuid(collection_id)
+            if object_id is not None:
+                raise ValueError("invalid_input: collection rename")
+        elif action == "move_object":
+            collection_id = self._bas07_uuid(collection_id)
+            object_id = self._bas07_uuid(object_id)
+            if name is not None:
+                raise ValueError("invalid_input: collection move")
+        else:
+            raise ValueError("invalid_input: collection action")
+        def apply(scene):
+            if action == "create":
+                col = bpy.data.collections.new(name)
+                cid = str(uuid.uuid4())
+                col["_bas07_collection_id"] = cid
+                try:
+                    scene.collection.children.link(col)
+                except Exception:
+                    bpy.data.collections.remove(col)
+                    raise
+                return cid, col.name
+            col = self._bas07_find(scene, collection_id, collections=True)
+            if action == "rename":
+                col.name = name
+                return collection_id, col.name
+            obj = self._bas07_find(scene, object_id)
+            # Link destination first so failure never leaves object unlinked.
+            if col not in obj.users_collection:
+                col.objects.link(obj)
+            for old in list(obj.users_collection):
+                if old != col:
+                    old.objects.unlink(obj)
+            return object_id, obj.name
+        return self._bas07_execute("manage_collection", scene_id, scene_revision,
+                                   idempotency_key,
+                                   [action, name, collection_id, object_id], apply)
 
     def get_scene_info(self):
         """Get information about the current Blender scene"""
