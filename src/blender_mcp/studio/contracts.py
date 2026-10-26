@@ -98,14 +98,14 @@ class RequestBase(StrictModel):
 
 
 class SceneInspect(RequestBase):
-    operation: Literal["studio_scene_inspect"] = "studio_scene_inspect"
+    operation: Literal["studio_scene_inspect"]
     effect_scope: Literal[EffectScope.READ]
     query: str | None = None
     limit: int = Field(default=20, ge=1, le=500)
 
 
 class CaptureViewport(RequestBase):
-    operation: Literal["studio_capture_viewport"] = "studio_capture_viewport"
+    operation: Literal["studio_capture_viewport"]
     effect_scope: Literal[EffectScope.READ]
     max_size: int = Field(default=768, ge=200, le=2000)
 
@@ -121,7 +121,7 @@ class TextSpec(StrictModel):
 
 
 class CreateObject(RequestBase):
-    operation: Literal["studio_create_object"] = "studio_create_object"
+    operation: Literal["studio_create_object"]
     effect_scope: Literal[EffectScope.SCENE]
     name: NonEmpty
     spec: Annotated[Union[PrimitiveSpec, TextSpec], Field(discriminator="kind")]
@@ -129,7 +129,7 @@ class CreateObject(RequestBase):
 
 
 class SetTransform(RequestBase):
-    operation: Literal["studio_set_transform"] = "studio_set_transform"
+    operation: Literal["studio_set_transform"]
     effect_scope: Literal[EffectScope.SCENE]
     object_id: UUID
     action: Literal["transform", "rename", "duplicate"]
@@ -149,7 +149,7 @@ class SetTransform(RequestBase):
 
 
 class ManageCollection(RequestBase):
-    operation: Literal["studio_manage_collection"] = "studio_manage_collection"
+    operation: Literal["studio_manage_collection"]
     effect_scope: Literal[EffectScope.SCENE]
     action: Literal["create", "move_object", "rename"]
     name: NonEmpty | None = None
@@ -169,7 +169,7 @@ class ManageCollection(RequestBase):
 
 
 class DeleteObject(RequestBase):
-    operation: Literal["studio_delete_object"] = "studio_delete_object"
+    operation: Literal["studio_delete_object"]
     effect_scope: Literal[EffectScope.SCENE]
     object_id: UUID
     snapshot_id: UUID
@@ -210,7 +210,7 @@ class GeometryPresetSpec(StrictModel):
 
 
 class AssignMaterial(RequestBase):
-    operation: Literal["studio_assign_material"] = "studio_assign_material"
+    operation: Literal["studio_assign_material"]
     effect_scope: Literal[EffectScope.SCENE]
     object_id: UUID
     spec: Annotated[
@@ -220,7 +220,7 @@ class AssignMaterial(RequestBase):
 
 
 class SetCamera(RequestBase):
-    operation: Literal["studio_set_camera"] = "studio_set_camera"
+    operation: Literal["studio_set_camera"]
     effect_scope: Literal[EffectScope.SCENE]
     camera_id: UUID | None = None
     location: Vec3
@@ -244,13 +244,13 @@ class WorldSpec(StrictModel):
 
 
 class SetLight(RequestBase):
-    operation: Literal["studio_set_light"] = "studio_set_light"
+    operation: Literal["studio_set_light"]
     effect_scope: Literal[EffectScope.SCENE]
     spec: Annotated[Union[LightSpec, WorldSpec], Field(discriminator="kind")]
 
 
 class SceneSave(RequestBase):
-    operation: Literal["studio_scene_save"] = "studio_scene_save"
+    operation: Literal["studio_scene_save"]
     effect_scope: Literal[EffectScope.FILE]
     output_uri: Uri
     overwrite: bool = False
@@ -264,7 +264,7 @@ class SceneSave(RequestBase):
 
 
 class SceneOpen(RequestBase):
-    operation: Literal["studio_scene_open"] = "studio_scene_open"
+    operation: Literal["studio_scene_open"]
     effect_scope: Literal[EffectScope.FILE]
     input_uri: Uri
     expected_sha256: Sha256
@@ -273,20 +273,20 @@ class SceneOpen(RequestBase):
 
 
 class SceneSnapshot(RequestBase):
-    operation: Literal["studio_scene_snapshot"] = "studio_scene_snapshot"
+    operation: Literal["studio_scene_snapshot"]
     effect_scope: Literal[EffectScope.FILE]
     label: NonEmpty | None = None
 
 
 class SceneRestore(RequestBase):
-    operation: Literal["studio_scene_restore"] = "studio_scene_restore"
+    operation: Literal["studio_scene_restore"]
     effect_scope: Literal[EffectScope.FILE]
     snapshot_id: UUID
     confirmation_token: NonEmpty
 
 
 class RenderStill(RequestBase):
-    operation: Literal["studio_render_still"] = "studio_render_still"
+    operation: Literal["studio_render_still"]
     effect_scope: Literal[EffectScope.FILE]
     width: int = Field(ge=1, le=16384)
     height: int = Field(ge=1, le=16384)
@@ -296,7 +296,7 @@ class RenderStill(RequestBase):
 
 
 class ExportArtifacts(RequestBase):
-    operation: Literal["studio_export_artifacts"] = "studio_export_artifacts"
+    operation: Literal["studio_export_artifacts"]
     effect_scope: Literal[EffectScope.FILE]
     output_uri: Uri
     formats: set[Literal["glb", "blend"]] = Field(min_length=1)

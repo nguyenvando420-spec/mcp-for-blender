@@ -14,7 +14,7 @@
     "studio-artifact_manifest-v1.schema.json": "0a9b93ce9d7f4fe28bdbcefe346a10526469b787c122090f0c896147bc4cbe62",
     "studio-capabilities-v1.schema.json": "37cde4e07b662c177b69193ca5d96261663c310bf43dd11232f3d7bc8704e501",
     "studio-job-v1.schema.json": "0a118dd453b44de2360a09029e40ae5a3e7c0d4a928e977b2dee43a64cf2d391",
-    "studio-request-v1.schema.json": "4ca0d7ca8738ae6c9afd0d0afa473d9b07422c22b26669234b41c0efd714dab0",
+    "studio-request-v1.schema.json": "01aa2ddf84db5f777a81604c814ac8f6bdda24ba7952ff24009131e4ba85bed6",
     "studio-response-v1.schema.json": "9265e8b90cdc2070041ae4720bd78940d3350eadb889faa51adafbe4687ee29a"
   }
 }

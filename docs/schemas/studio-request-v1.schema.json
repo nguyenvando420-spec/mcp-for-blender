@@ -32,7 +32,6 @@
         },
         "operation": {
           "const": "studio_assign_material",
-          "default": "studio_assign_material",
           "title": "Operation",
           "type": "string"
         },
@@ -97,6 +96,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "object_id",
         "spec"
       ],
@@ -166,7 +166,6 @@
         },
         "operation": {
           "const": "studio_capture_viewport",
-          "default": "studio_capture_viewport",
           "title": "Operation",
           "type": "string"
         },
@@ -204,7 +203,8 @@
       },
       "required": [
         "request_id",
-        "effect_scope"
+        "effect_scope",
+        "operation"
       ],
       "title": "CaptureViewport",
       "type": "object"
@@ -283,7 +283,6 @@
         },
         "operation": {
           "const": "studio_create_object",
-          "default": "studio_create_object",
           "title": "Operation",
           "type": "string"
         },
@@ -340,6 +339,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "name",
         "spec"
       ],
@@ -384,7 +384,6 @@
         },
         "operation": {
           "const": "studio_delete_object",
-          "default": "studio_delete_object",
           "title": "Operation",
           "type": "string"
         },
@@ -428,6 +427,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "object_id",
         "snapshot_id",
         "confirmation_token"
@@ -484,7 +484,6 @@
         },
         "operation": {
           "const": "studio_export_artifacts",
-          "default": "studio_export_artifacts",
           "title": "Operation",
           "type": "string"
         },
@@ -530,6 +529,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "output_uri",
         "formats",
         "object_ids"
@@ -746,7 +746,6 @@
         },
         "operation": {
           "const": "studio_manage_collection",
-          "default": "studio_manage_collection",
           "title": "Operation",
           "type": "string"
         },
@@ -785,6 +784,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "action"
       ],
       "title": "ManageCollection",
@@ -936,7 +936,6 @@
         },
         "operation": {
           "const": "studio_render_still",
-          "default": "studio_render_still",
           "title": "Operation",
           "type": "string"
         },
@@ -1001,6 +1000,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "width",
         "height",
         "samples",
@@ -1043,7 +1043,6 @@
         },
         "operation": {
           "const": "studio_scene_inspect",
-          "default": "studio_scene_inspect",
           "title": "Operation",
           "type": "string"
         },
@@ -1093,7 +1092,8 @@
       },
       "required": [
         "request_id",
-        "effect_scope"
+        "effect_scope",
+        "operation"
       ],
       "title": "SceneInspect",
       "type": "object"
@@ -1143,7 +1143,6 @@
         },
         "operation": {
           "const": "studio_scene_open",
-          "default": "studio_scene_open",
           "title": "Operation",
           "type": "string"
         },
@@ -1187,6 +1186,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "input_uri",
         "expected_sha256",
         "snapshot_id",
@@ -1228,7 +1228,6 @@
         },
         "operation": {
           "const": "studio_scene_restore",
-          "default": "studio_scene_restore",
           "title": "Operation",
           "type": "string"
         },
@@ -1272,6 +1271,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "snapshot_id",
         "confirmation_token"
       ],
@@ -1319,7 +1319,6 @@
         },
         "operation": {
           "const": "studio_scene_save",
-          "default": "studio_scene_save",
           "title": "Operation",
           "type": "string"
         },
@@ -1370,6 +1369,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "output_uri"
       ],
       "title": "SceneSave",
@@ -1416,7 +1416,6 @@
         },
         "operation": {
           "const": "studio_scene_snapshot",
-          "default": "studio_scene_snapshot",
           "title": "Operation",
           "type": "string"
         },
@@ -1454,7 +1453,8 @@
       },
       "required": [
         "request_id",
-        "effect_scope"
+        "effect_scope",
+        "operation"
       ],
       "title": "SceneSnapshot",
       "type": "object"
@@ -1523,7 +1523,6 @@
         },
         "operation": {
           "const": "studio_set_camera",
-          "default": "studio_set_camera",
           "title": "Operation",
           "type": "string"
         },
@@ -1579,6 +1578,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "location",
         "rotation_euler"
       ],
@@ -1612,7 +1612,6 @@
         },
         "operation": {
           "const": "studio_set_light",
-          "default": "studio_set_light",
           "title": "Operation",
           "type": "string"
         },
@@ -1669,6 +1668,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "spec"
       ],
       "title": "SetLight",
@@ -1754,7 +1754,6 @@
         },
         "operation": {
           "const": "studio_set_transform",
-          "default": "studio_set_transform",
           "title": "Operation",
           "type": "string"
         },
@@ -1843,6 +1842,7 @@
       "required": [
         "request_id",
         "effect_scope",
+        "operation",
         "object_id",
         "action"
       ],

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError as SchemaValidationError
 from pydantic import ValidationError
 
 from blender_mcp.studio.contracts import (
@@ -125,6 +125,17 @@ class StudioContractTests(unittest.TestCase):
                       {"operation": "studio_execute_code"}):
             with self.subTest(patch=patch), self.assertRaises(ValidationError):
                 validate_request({**base, **patch})
+
+    def test_json_schema_requires_operation_and_matching_scope(self):
+        validator = Draft202012Validator(json_schemas()["request"])
+        missing_operation = samples()[5]
+        missing_operation.pop("operation")
+        for invalid in (missing_operation, {**samples()[5], "effect_scope": "read"},
+                        {**samples()[5], "operation": "studio_execute_code"}):
+            with self.subTest(invalid=invalid), self.assertRaises(SchemaValidationError):
+                validator.validate(invalid)
+            with self.assertRaises(ValidationError):
+                validate_request(invalid)
 
     def test_composite_operation_variants(self):
         variants = [

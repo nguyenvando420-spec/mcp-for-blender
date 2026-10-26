@@ -11,7 +11,7 @@
 | Command | Result |
 | --- | --- |
 | `.venv/bin/python scripts/export_studio_schema.py` | Pass: 5 schema files written |
-| `.venv/bin/python tests/test_studio_contracts.py` | Pass: 16 unittest cases (gồm subcases cho toàn bộ 15 operations chuẩn, types/bounds/negative cases, capability gate, cancellation/stop acknowledgement, recovery/deadline identity, response/artifact/provenance và schema parity) |
+| `.venv/bin/python tests/test_studio_contracts.py` | Pass: 17 unittest cases (gồm subcases cho toàn bộ 15 operations chuẩn, types/bounds/negative cases, capability gate, cancellation/stop acknowledgement, recovery/deadline identity, response/artifact/provenance và schema parity) |
 | `.venv/bin/python -m compileall -q src tests scripts addon.py main.py` | Pass |
 | `git diff --check` | Pass |
 | `Draft202012Validator.check_schema` for all 5 generated schemas | Pass |
