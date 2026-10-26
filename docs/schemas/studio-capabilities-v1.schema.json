@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "addon_protocol": {
+      "minimum": 0,
+      "title": "Addon Protocol",
+      "type": "integer"
+    },
+    "contract": {
+      "$ref": "#/$defs/ContractVersion"
+    },
+    "features": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Features",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "operations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Operations",
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "addon_protocol",
+    "operations"
+  ],
+  "title": "Capabilities",
+  "type": "object"
+}

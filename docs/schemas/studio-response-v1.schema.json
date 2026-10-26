@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "invalid_input",
+        "unsupported_version",
+        "capability_unavailable",
+        "permission_denied",
+        "stale_scene",
+        "object_not_found",
+        "conflict",
+        "timeout",
+        "cancelled",
+        "worker_unavailable",
+        "internal"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "ObjectRef": {
+      "additionalProperties": false,
+      "description": "Persistent UUID stored on the Blender datablock; name is only a label.",
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "object",
+            "collection",
+            "material",
+            "camera",
+            "light"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "title": "ObjectRef",
+      "type": "object"
+    },
+    "ResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Artifact Ids",
+          "type": "array"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/ObjectRef"
+          },
+          "title": "Objects",
+          "type": "array"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        }
+      },
+      "title": "ResultPayload",
+      "type": "object"
+    },
+    "StudioError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Details",
+          "type": "object"
+        },
+        "message": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "StudioError",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "#/$defs/ContractVersion"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StudioError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "job_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Id"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResultPayload"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scene_revision": {
+      "minimum": 0,
+      "title": "Scene Revision",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "accepted",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "scene_revision",
+    "status"
+  ],
+  "title": "StudioResponse",
+  "type": "object"
+}

@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "invalid_input",
+        "unsupported_version",
+        "capability_unavailable",
+        "permission_denied",
+        "stale_scene",
+        "object_not_found",
+        "conflict",
+        "timeout",
+        "cancelled",
+        "worker_unavailable",
+        "internal"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "JobState": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
+      "title": "JobState",
+      "type": "string"
+    },
+    "StudioError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Details",
+          "type": "object"
+        },
+        "message": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "StudioError",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Artifact Ids",
+      "type": "array"
+    },
+    "attempt": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Attempt",
+      "type": "integer"
+    },
+    "cancel_requested": {
+      "default": false,
+      "title": "Cancel Requested",
+      "type": "boolean"
+    },
+    "contract": {
+      "$ref": "#/$defs/ContractVersion"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StudioError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "idempotency_key": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "lease_expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lease Expires At"
+    },
+    "operation": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Operation",
+      "type": "string"
+    },
+    "progress": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Progress",
+      "type": "number"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/JobState"
+    },
+    "timeout_seconds": {
+      "minimum": 1,
+      "title": "Timeout Seconds",
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "request_id",
+    "idempotency_key",
+    "operation",
+    "state",
+    "progress",
+    "timeout_seconds",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "Job",
+  "type": "object"
+}

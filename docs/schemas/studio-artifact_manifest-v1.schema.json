@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "format": "uuid",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "job_id": {
+          "format": "uuid",
+          "title": "Job Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "blend",
+            "glb",
+            "png",
+            "mp4",
+            "manifest",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "uri": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Uri",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "job_id",
+        "kind",
+        "uri",
+        "bytes",
+        "sha256",
+        "version",
+        "provenance"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "blender_version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Blender Version",
+          "type": "string"
+        },
+        "input_sha256": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Input Sha256",
+          "type": "array"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        },
+        "model_license": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model License"
+        },
+        "source_commit": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Commit"
+        },
+        "worker_version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Worker Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "blender_version",
+        "worker_version"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "minItems": 1,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "contract": {
+      "$ref": "#/$defs/ContractVersion"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "job_id": {
+      "format": "uuid",
+      "title": "Job Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "artifacts",
+    "created_at"
+  ],
+  "title": "ArtifactManifest",
+  "type": "object"
+}

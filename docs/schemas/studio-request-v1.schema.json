@@ -1,0 +1,1110 @@
+{
+  "$defs": {
+    "CaptureViewport": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "max_size": {
+          "default": 768,
+          "maximum": 2000,
+          "minimum": 200,
+          "title": "Max Size",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "studio_capture_viewport",
+          "default": "studio_capture_viewport",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope"
+      ],
+      "title": "CaptureViewport",
+      "type": "object"
+    },
+    "ContractVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "major": {
+          "const": 1,
+          "default": 1,
+          "title": "Major",
+          "type": "integer"
+        },
+        "minor": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Minor",
+          "type": "integer"
+        }
+      },
+      "title": "ContractVersion",
+      "type": "object"
+    },
+    "CreatePrimitive": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "location": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Location",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_create_primitive",
+          "default": "studio_create_primitive",
+          "title": "Operation",
+          "type": "string"
+        },
+        "primitive": {
+          "enum": [
+            "cube",
+            "sphere",
+            "cylinder",
+            "cone",
+            "plane"
+          ],
+          "title": "Primitive",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "primitive",
+        "name"
+      ],
+      "title": "CreatePrimitive",
+      "type": "object"
+    },
+    "CreateText": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "location": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Location",
+          "type": "array"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_create_text",
+          "default": "studio_create_text",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "text",
+        "name"
+      ],
+      "title": "CreateText",
+      "type": "object"
+    },
+    "DeleteObject": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_delete_object",
+          "default": "studio_delete_object",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "object_id",
+        "snapshot_id"
+      ],
+      "title": "DeleteObject",
+      "type": "object"
+    },
+    "EffectScope": {
+      "enum": [
+        "read",
+        "scene",
+        "file",
+        "external"
+      ],
+      "title": "EffectScope",
+      "type": "string"
+    },
+    "ExportGlb": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "object_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Object Ids",
+          "type": "array"
+        },
+        "operation": {
+          "const": "studio_export_glb",
+          "default": "studio_export_glb",
+          "title": "Operation",
+          "type": "string"
+        },
+        "output_uri": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Output Uri",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "output_uri",
+        "object_ids"
+      ],
+      "title": "ExportGlb",
+      "type": "object"
+    },
+    "InspectScene": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "studio_inspect_scene",
+          "default": "studio_inspect_scene",
+          "title": "Operation",
+          "type": "string"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Query"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope"
+      ],
+      "title": "InspectScene",
+      "type": "object"
+    },
+    "ManageCollection": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "create",
+            "move_object",
+            "rename"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "collection_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collection Id"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "operation": {
+          "const": "studio_manage_collection",
+          "default": "studio_manage_collection",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "action"
+      ],
+      "title": "ManageCollection",
+      "type": "object"
+    },
+    "OpenScene": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "expected_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Expected Sha256",
+          "type": "string"
+        },
+        "input_uri": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Input Uri",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_open_scene",
+          "default": "studio_open_scene",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "input_uri",
+        "expected_sha256"
+      ],
+      "title": "OpenScene",
+      "type": "object"
+    },
+    "RenderStill": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "height": {
+          "maximum": 16384,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "studio_render_still",
+          "default": "studio_render_still",
+          "title": "Operation",
+          "type": "string"
+        },
+        "output_uri": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Output Uri",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "samples": {
+          "maximum": 65536,
+          "minimum": 1,
+          "title": "Samples",
+          "type": "integer"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 600,
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 16384,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "width",
+        "height",
+        "samples",
+        "output_uri"
+      ],
+      "title": "RenderStill",
+      "type": "object"
+    },
+    "SaveScene": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "operation": {
+          "const": "studio_save_scene",
+          "default": "studio_save_scene",
+          "title": "Operation",
+          "type": "string"
+        },
+        "output_uri": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Output Uri",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "output_uri"
+      ],
+      "title": "SaveScene",
+      "type": "object"
+    },
+    "SetCamera": {
+      "additionalProperties": false,
+      "properties": {
+        "camera_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Camera Id"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "lens_mm": {
+          "default": 50,
+          "exclusiveMinimum": 0,
+          "maximum": 1000,
+          "title": "Lens Mm",
+          "type": "number"
+        },
+        "location": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Location",
+          "type": "array"
+        },
+        "operation": {
+          "const": "studio_set_camera",
+          "default": "studio_set_camera",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "rotation_euler": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rotation Euler",
+          "type": "array"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "location",
+        "rotation_euler"
+      ],
+      "title": "SetCamera",
+      "type": "object"
+    },
+    "SetLight": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Color",
+          "type": "array"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "energy": {
+          "minimum": 0,
+          "title": "Energy",
+          "type": "number"
+        },
+        "light_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Light Id"
+        },
+        "light_type": {
+          "enum": [
+            "POINT",
+            "SUN",
+            "SPOT",
+            "AREA"
+          ],
+          "title": "Light Type",
+          "type": "string"
+        },
+        "location": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Location",
+          "type": "array"
+        },
+        "operation": {
+          "const": "studio_set_light",
+          "default": "studio_set_light",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "light_type",
+        "energy",
+        "color",
+        "location"
+      ],
+      "title": "SetLight",
+      "type": "object"
+    },
+    "SetMaterial": {
+      "additionalProperties": false,
+      "properties": {
+        "base_color": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Base Color",
+          "type": "array"
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "metallic": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Metallic",
+          "type": "number"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_set_material",
+          "default": "studio_set_material",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "roughness": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Roughness",
+          "type": "number"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "object_id",
+        "base_color",
+        "metallic",
+        "roughness"
+      ],
+      "title": "SetMaterial",
+      "type": "object"
+    },
+    "SnapshotScene": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "operation": {
+          "const": "studio_snapshot_scene",
+          "default": "studio_snapshot_scene",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope"
+      ],
+      "title": "SnapshotScene",
+      "type": "object"
+    },
+    "TransformObject": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "effect_scope": {
+          "$ref": "#/$defs/EffectScope"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "operation": {
+          "const": "studio_transform_object",
+          "default": "studio_transform_object",
+          "title": "Operation",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "rotation_euler": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotation Euler"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "scene_revision": {
+          "minimum": 0,
+          "title": "Scene Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "request_id",
+        "scene_revision",
+        "effect_scope",
+        "object_id"
+      ],
+      "title": "TransformObject",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "studio_capture_viewport": "#/$defs/CaptureViewport",
+      "studio_create_primitive": "#/$defs/CreatePrimitive",
+      "studio_create_text": "#/$defs/CreateText",
+      "studio_delete_object": "#/$defs/DeleteObject",
+      "studio_export_glb": "#/$defs/ExportGlb",
+      "studio_inspect_scene": "#/$defs/InspectScene",
+      "studio_manage_collection": "#/$defs/ManageCollection",
+      "studio_open_scene": "#/$defs/OpenScene",
+      "studio_render_still": "#/$defs/RenderStill",
+      "studio_save_scene": "#/$defs/SaveScene",
+      "studio_set_camera": "#/$defs/SetCamera",
+      "studio_set_light": "#/$defs/SetLight",
+      "studio_set_material": "#/$defs/SetMaterial",
+      "studio_snapshot_scene": "#/$defs/SnapshotScene",
+      "studio_transform_object": "#/$defs/TransformObject"
+    },
+    "propertyName": "operation"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/InspectScene"
+    },
+    {
+      "$ref": "#/$defs/CaptureViewport"
+    },
+    {
+      "$ref": "#/$defs/CreatePrimitive"
+    },
+    {
+      "$ref": "#/$defs/CreateText"
+    },
+    {
+      "$ref": "#/$defs/TransformObject"
+    },
+    {
+      "$ref": "#/$defs/ManageCollection"
+    },
+    {
+      "$ref": "#/$defs/DeleteObject"
+    },
+    {
+      "$ref": "#/$defs/SetMaterial"
+    },
+    {
+      "$ref": "#/$defs/SetCamera"
+    },
+    {
+      "$ref": "#/$defs/SetLight"
+    },
+    {
+      "$ref": "#/$defs/SaveScene"
+    },
+    {
+      "$ref": "#/$defs/OpenScene"
+    },
+    {
+      "$ref": "#/$defs/SnapshotScene"
+    },
+    {
+      "$ref": "#/$defs/RenderStill"
+    },
+    {
+      "$ref": "#/$defs/ExportGlb"
+    }
+  ]
+}
