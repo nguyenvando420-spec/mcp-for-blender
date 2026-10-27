@@ -147,8 +147,10 @@ class SnapshotStore:
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
             raise SnapshotError("Invalid idempotency key")
         rid = str(uuid5(NAMESPACE_URL, json.dumps(
-            [str(self.root), sid, scene_revision, idempotency_key, label],
-            separators=(",", ":"))))
+            [str(self.root), sid, idempotency_key], separators=(",", ":"))))
+        request_digest = hashlib.sha256(json.dumps(
+            [sid, scene_revision, idempotency_key, label],
+            separators=(",", ":")).encode()).hexdigest()
         fd = self._folder(rid, create=True)
         try:
             names = os.listdir(fd)
@@ -156,8 +158,10 @@ class SnapshotStore:
             os.close(fd)
         if "manifest.json" in names:
             existing = self.verify(rid)
+            manifest = json.loads((existing.path.parent / "manifest.json").read_text())
             if (existing.scene_id != sid or existing.scene_revision != scene_revision
-                    or existing.idempotency_key != idempotency_key):
+                    or existing.idempotency_key != idempotency_key
+                    or manifest.get("request_digest") != request_digest):
                 raise SnapshotError("Snapshot reservation conflict")
             return rid, existing.path, True
         if "scene.blend" in names:
@@ -165,7 +169,7 @@ class SnapshotStore:
         return rid, self.root / ".bas12-snapshots" / rid / "scene.blend", False
 
     def finalize(self, snapshot_id: str, *, scene_id: str, scene_revision: int,
-                 idempotency_key: str) -> Snapshot:
+                 idempotency_key: str, label: str = "") -> Snapshot:
         rid = _uuid(snapshot_id)
         sid = _uuid(scene_id)
         if type(scene_revision) is not int or scene_revision < 0:
@@ -198,6 +202,9 @@ class SnapshotStore:
                 "version": 1, "snapshot_id": rid, "scene_id": sid,
                 "scene_revision": scene_revision, "idempotency_key": idempotency_key,
                 "file": "scene.blend", "sha256": digest.hexdigest(),
+                "request_digest": hashlib.sha256(json.dumps(
+                    [sid, scene_revision, idempotency_key, label],
+                    separators=(",", ":")).encode()).hexdigest(),
                 "bytes": st.st_size,
             }
             manifest = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
