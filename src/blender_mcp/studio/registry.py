@@ -27,6 +27,7 @@ HANDLERS = {
     "studio_create_object": "studio_create_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
     "studio_scene_save": "studio_scene_snapshot_v1",
+    "studio_scene_open": "studio_scene_open_v1",
     "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
@@ -39,6 +40,7 @@ def visible_studio_tools(profile):
     if profile in (Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
         return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
                 | ({"studio_scene_snapshot", "studio_scene_save"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
+                | ({"studio_scene_open"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set())
                 | ({"studio_scene_restore"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set()))
     return frozenset()
 
@@ -148,9 +150,6 @@ class StudioGateway:
                 from .snapshot_store import SnapshotStore, SnapshotError
                 root = os.getenv("BLENDER_MCP_STUDIO_ROOT", "")
                 try:
-                    if req.operation == "studio_scene_save" and req.overwrite:
-                        return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
-                                            "Overwrite blocked until durable pre-overwrite backup")
                     store = SnapshotStore(root)
                     label = (req.label or "") if req.operation == "studio_scene_snapshot" else "save:" + req.output_uri
                     snapshot_id, path, replay = store.begin_keyed(
@@ -178,8 +177,21 @@ class StudioGateway:
                         from ..security_policy import canonical_allowed_file
                         destination = canonical_allowed_file(
                             req.output_uri, self.policy.write_roots,
-                            writing=True, overwrite=False)
-                        store.publish_new(artifact.snapshot_id, destination)
+                            writing=True, overwrite=req.overwrite)
+                        if req.overwrite:
+                            prior = store.backup_existing(
+                                destination, req.expected_sha256,
+                                scene_id=str(req.scene_id), scene_revision=req.scene_revision,
+                                idempotency_key=req.idempotency_key)
+                            # Consume before swap. On any ambiguous failure require
+                            # explicit new preview + a new confirmation.
+                            store.consume_confirmation(req.confirmation_token)
+                            store.publish_overwrite(
+                                artifact.snapshot_id, destination,
+                                expected_sha256=req.expected_sha256,
+                                backup_id=prior.snapshot_id)
+                        else:
+                            store.publish_new(artifact.snapshot_id, destination)
                     reply = {"scene_id": artifact.scene_id,
                              "scene_revision": artifact.scene_revision}
                     result = ResultPayload(
@@ -190,6 +202,54 @@ class StudioGateway:
                 except (SnapshotError, OSError) as exc:
                     return self._failed(raw, ErrorCode.CONFLICT,
                                         "Snapshot failed or execution state unknown: " + type(exc).__name__)
+            elif req.operation == "studio_scene_open":
+                from .snapshot_store import SnapshotStore, SnapshotError
+                from ..security_policy import canonical_allowed_file
+                try:
+                    store = SnapshotStore(os.getenv("BLENDER_MCP_STUDIO_ROOT", ""))
+                    input_path = canonical_allowed_file(req.input_uri, self.policy.read_roots,
+                                                        writing=False)
+                    store.verify_external(input_path, req.expected_sha256)
+                    previous = store.verify(str(req.snapshot_id))
+                    if (previous.scene_id != str(req.scene_id)
+                            or previous.scene_revision != req.scene_revision):
+                        raise SnapshotError("A fresh same-revision snapshot is required")
+                    # Capture current state again just before importing another
+                    # file. A failure cannot replace the interactive scene.
+                    backup_id, backup_path, done = store.begin_keyed(
+                        scene_id=str(req.scene_id), scene_revision=req.scene_revision,
+                        idempotency_key="pre-open:" + req.idempotency_key,
+                        label=str(req.input_uri) + "|" + req.expected_sha256)
+                    if not done:
+                        saved = self.bridge(HANDLERS["studio_scene_snapshot"], {
+                            "scene_id": str(req.scene_id),
+                            "scene_revision": req.scene_revision,
+                            "snapshot_id": backup_id, "path": str(backup_path)}, False)
+                        backup = store.finalize(
+                            backup_id, scene_id=str(req.scene_id),
+                            scene_revision=req.scene_revision,
+                            idempotency_key="pre-open:" + req.idempotency_key,
+                            label=str(req.input_uri) + "|" + req.expected_sha256,
+                            scene_inventory=saved.get("objects", []))
+                        if saved.get("sha256") != backup.sha256:
+                            raise SnapshotError("Pre-open snapshot checksum mismatch")
+                    store.consume_confirmation(req.confirmation_token)
+                    opened = self.bridge(HANDLERS[req.operation], {
+                        "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
+                        "path": str(input_path), "sha256": req.expected_sha256,
+                        "snapshot_id": str(req.snapshot_id),
+                        "confirmation_token": req.confirmation_token,
+                        "backup_snapshot_id": backup_id}, False)
+                    if opened.get("old_scene_id") != str(req.scene_id) or opened.get(
+                            "scene_revision") != req.scene_revision + 1:
+                        raise SnapshotError("Open reply mismatch; scene state unknown")
+                    reply = {"scene_id": opened["scene_id"],
+                             "scene_revision": opened["scene_revision"]}
+                    result = ResultPayload(snapshot_id=UUID(backup_id),
+                                           summary="Opened verified scene; previous snapshot=" + backup_id)
+                except (SnapshotError, OSError) as exc:
+                    return self._failed(raw, ErrorCode.CONFLICT,
+                                        "Open denied or execution state unknown: " + type(exc).__name__)
             elif req.operation == "studio_scene_restore":
                 from .snapshot_store import SnapshotStore, SnapshotError
                 try:
