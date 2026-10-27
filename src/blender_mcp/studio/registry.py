@@ -147,11 +147,12 @@ class StudioGateway:
         except (ValueError, TypeError, AttributeError):
             return UUID(int=0), 0
 
-    def _failed(self, raw, code, message):
+    def _failed(self, raw, code, message, details=None):
         sid, revision = self._context(raw)
         response = StudioResponse(
             request_id=self._id(raw), scene_id=sid, scene_revision=max(revision, 0),
-            status="failed", error=StudioError(code=code, message=str(message)[:256] or code.value),
+            status="failed", error=StudioError(code=code, message=str(message)[:256] or code.value,
+                                               details=details or {}),
         )
         return response.model_dump(mode="json")
 
@@ -389,6 +390,7 @@ class StudioGateway:
                 )
             elif req.operation == "studio_delete_object":
                 from .snapshot_store import SnapshotStore, SnapshotError
+                backup_id = None
                 try:
                     store = SnapshotStore(os.getenv("BLENDER_MCP_STUDIO_ROOT", ""))
                     prior = store.verify(str(req.snapshot_id))
@@ -433,7 +435,9 @@ class StudioGateway:
                         summary="Object deleted with pre-delete snapshot=" + backup_id)
                 except (SnapshotError, OSError) as exc:
                     return self._failed(raw, ErrorCode.CONFLICT,
-                                        "Delete denied or state unknown: " + type(exc).__name__)
+                                        "Delete denied or state unknown: " + type(exc).__name__,
+                                        details={"pre_delete_snapshot_id": backup_id or "",
+                                                 "may_have_partial_effects": backup_id is not None})
             else:
                 return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE, "No BAS-05 handler")
             response = StudioResponse(
