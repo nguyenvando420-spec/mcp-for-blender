@@ -34,6 +34,60 @@ if not server.running:
     raise RuntimeError("BAS05 real Blender GUI bridge did not start")
 bpy.types.blendermcp_server = server
 
+# BAS-07 UAT: Blender GUI main-thread edits originating OUTSIDE the MCP
+# request dispatcher. This is an automated simulated direct GUI user edit;
+# it does not claim to be a human clicking through the editor.
+def _bas07_direct_gui_edit():
+    import json
+    command_path = output_dir / "bas07-direct-edit.request.json"
+    if not command_path.is_file():
+        return 0.05
+    response_path = output_dir / "bas07-direct-edit.result.json"
+    try:
+        request = json.loads(command_path.read_text())
+        command_path.unlink()
+        scene = bpy.context.scene
+        before_revision = scene.get("_bas05_scene_revision")
+        matches = [obj for obj in scene.objects
+                   if obj.get("_bas05_object_id") == request.get("object_id")]
+        if len(matches) != 1:
+            raise RuntimeError("Expected one Studio UUID in GUI for edit")
+        obj = matches[0]
+        action = request["action"]
+        if action == "translate":
+            obj.location.x += 0.25
+        elif action == "mesh_vertex":
+            if obj.type != "MESH" or not len(obj.data.vertices):
+                raise RuntimeError("GUI vertex edit requires a mesh")
+            obj.data.vertices[0].co.x += 0.15
+            obj.data.update()
+        elif action == "material":
+            mat = bpy.data.materials.new("BAS07_Manual_GUI_Material")
+            mat.diffuse_color = (0.2, 0.5, 0.8, 1.0)
+            obj.data.materials.append(mat)
+        elif action == "camera":
+            if scene.camera is None:
+                raise RuntimeError("Scene lacks camera")
+            scene.camera.data.lens += 5.0
+        elif action == "rename":
+            obj.name = "BAS07_Changed_Out_Of_Band"
+        else:
+            raise RuntimeError("Invalid GUI edit action")
+        bpy.context.view_layer.update()
+        after_revision = scene.get("_bas05_scene_revision")
+        response_path.write_text(json.dumps({
+            "action": action, "object_id": request["object_id"],
+            "before_revision": before_revision,
+            "after_revision": after_revision, "success": True}))
+    except Exception as exc:
+        response_path.write_text(json.dumps({"success": False,
+                                              "error": type(exc).__name__,
+                                              "message": str(exc)}))
+    return 0.05
+
+
+bpy.app.timers.register(_bas07_direct_gui_edit, first_interval=0.05)
+
 
 def finish_when_requested():
     if not done_file.exists():
