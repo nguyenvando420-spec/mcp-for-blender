@@ -26,6 +26,7 @@ HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
     "studio_create_object": "studio_create_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
+    "studio_scene_save": "studio_scene_snapshot_v1",
     "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
@@ -37,7 +38,7 @@ def visible_studio_tools(profile):
     from ..security_policy import Profile
     if profile in (Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
         return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
-                | ({"studio_scene_snapshot"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
+                | ({"studio_scene_snapshot", "studio_scene_save"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
                 | ({"studio_scene_restore"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set()))
     return frozenset()
 
@@ -143,14 +144,18 @@ class StudioGateway:
                     "name": reply.get("name"), "object_count": reply.get("object_count"),
                     "objects": reply.get("objects", []),
                 }, ensure_ascii=False))
-            elif req.operation == "studio_scene_snapshot":
+            elif req.operation in ("studio_scene_snapshot", "studio_scene_save"):
                 from .snapshot_store import SnapshotStore, SnapshotError
                 root = os.getenv("BLENDER_MCP_STUDIO_ROOT", "")
                 try:
+                    if req.operation == "studio_scene_save" and req.overwrite:
+                        return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
+                                            "Overwrite blocked until durable pre-overwrite backup")
                     store = SnapshotStore(root)
+                    label = (req.label or "") if req.operation == "studio_scene_snapshot" else "save:" + req.output_uri
                     snapshot_id, path, replay = store.begin_keyed(
                         scene_id=str(req.scene_id), scene_revision=req.scene_revision,
-                        idempotency_key=req.idempotency_key, label=req.label or "")
+                        idempotency_key=req.idempotency_key, label=label)
                     if replay:
                         artifact = store.verify(snapshot_id)
                     else:
@@ -165,14 +170,21 @@ class StudioGateway:
                         artifact = store.finalize(
                             snapshot_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
-                            idempotency_key=req.idempotency_key, label=req.label or "")
+                            idempotency_key=req.idempotency_key, label=label)
                         if saved.get("sha256") != artifact.sha256:
                             raise SnapshotError("Blender snapshot checksum mismatch")
+                    if req.operation == "studio_scene_save":
+                        from ..security_policy import canonical_allowed_file
+                        destination = canonical_allowed_file(
+                            req.output_uri, self.policy.write_roots,
+                            writing=True, overwrite=False)
+                        store.publish_new(artifact.snapshot_id, destination)
                     reply = {"scene_id": artifact.scene_id,
                              "scene_revision": artifact.scene_revision}
                     result = ResultPayload(
                         snapshot_id=UUID(artifact.snapshot_id),
-                        summary=("Snapshot replay: " if replay else "Snapshot written: ")
+                        summary=("Scene saved: " if req.operation == "studio_scene_save" else
+                                 ("Snapshot replay: " if replay else "Snapshot written: "))
                                 + artifact.sha256)
                 except (SnapshotError, OSError) as exc:
                     return self._failed(raw, ErrorCode.CONFLICT,
