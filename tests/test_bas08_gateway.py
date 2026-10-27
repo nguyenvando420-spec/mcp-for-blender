@@ -3,6 +3,7 @@ import base64
 import hashlib
 import struct
 import zlib
+import pytest
 from uuid import uuid4
 
 from blender_mcp.security_policy import Policy, Profile
