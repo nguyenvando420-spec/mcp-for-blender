@@ -205,6 +205,68 @@ async def accept(port, record):
                 "snapshot_id": saved_scene["result"]["snapshot_id"],
                 "overwrite_disabled": True,
             }
+            # Overwrite requires the pre-existing file SHA and a separate
+            # resource-bound trusted confirmation, never plain save permission.
+            from blender_mcp.security_policy import issue_resource_confirmation
+            old_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
+            overwrite_token = issue_resource_confirmation(
+                secret, operation="studio_scene_save", scene_id=sid,
+                scene_revision=rev + 53, resource=destination.as_uri() + "|" + old_hash)
+            replaced = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replaced["status"] == "succeeded", replaced
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            replay_overwrite = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replay_overwrite["status"] == "failed", replay_overwrite
+            record["bas12_overwrite"] = {
+                "approved_sha256": old_hash,
+                "new_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "backup_available": True, "replay_denied": True,
+            }
+            # Open is an in-process scene import, keeping the addon socket
+            # alive and returning a NEW scene UUID to force client resync.
+            original_snapshot = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": {
+                    "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                    "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                    "idempotency_key": "bas12-open-prior", "label": "pre-open"}}))
+            assert original_snapshot["status"] == "succeeded", original_snapshot
+            prior_id = original_snapshot["result"]["snapshot_id"]
+            file_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+            token_open = issue_resource_confirmation(
+                secret, operation="studio_scene_open", scene_id=sid,
+                scene_revision=rev + 53, snapshot_id=prior_id,
+                resource=destination.as_uri() + "|" + file_sha)
+            opened = unpack(await client.call_tool("studio_scene_open", {"request": {
+                "operation": "studio_scene_open", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-open-e2e", "input_uri": destination.as_uri(),
+                "expected_sha256": file_sha, "snapshot_id": prior_id,
+                "confirmation_token": token_open}}))
+            assert opened["status"] == "succeeded", opened
+            assert opened["scene_id"] != sid and opened["scene_revision"] == rev + 54
+            new_context = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 200}}))
+            assert new_context["status"] == "succeeded", new_context
+            assert new_context["scene_id"] == opened["scene_id"]
+            assert new_context["scene_revision"] == rev + 54
+            assert any(item["object_id"] == oid for item in
+                       json.loads(new_context["result"]["summary"])["objects"])
+            record["bas12_open"] = {
+                "old_scene_id": sid, "new_scene_id": opened["scene_id"],
+                "old_revision": rev + 53, "new_revision": rev + 54,
+                "socket_kept_alive": True, "checksum": file_sha,
+            }
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
                                        "after_revision": rev + 53,
                                        "backup_id": restored["result"]["snapshot_id"]}
