@@ -1940,6 +1940,10 @@ class BlenderMCPServer:
         target = self._bas07_uuid(obj_id)
         items = (bpy.data.collections if collections else scene.objects)
         matches = [item for item in items if item.get(key) == target]
+        if collections:
+            # Do not edit orphan or unrelated scene collection datablocks.
+            scene_membership = set(scene.collection.children_recursive)
+            matches = [item for item in matches if item in scene_membership]
         if len(matches) != 1:
             # Ambiguity is a conflict, never silently edit the first match.
             raise ValueError("conflict: duplicate UUID" if matches else
@@ -2031,14 +2035,28 @@ class BlenderMCPServer:
                     raise
                 return oid, copy.name
             if action == "rename":
-                obj.name = name
+                before = obj.name
+                try:
+                    obj.name = name
+                except Exception:
+                    obj.name = before
+                    raise
             else:
-                if loc is not None:
-                    obj.location = loc
-                if rot is not None:
-                    obj.rotation_euler = rot
-                if scl is not None:
-                    obj.scale = scl
+                before = (obj.location.copy(), obj.rotation_euler.copy(),
+                          obj.scale.copy())
+                try:
+                    if loc is not None:
+                        obj.location = loc
+                    if rot is not None:
+                        obj.rotation_euler = rot
+                    if scl is not None:
+                        obj.scale = scl
+                except Exception:
+                    try:
+                        obj.location, obj.rotation_euler, obj.scale = before
+                    except Exception:
+                        raise ValueError("conflict: partial_transform_unknown")
+                    raise
             return target, obj.name
         return self._bas07_execute("set_transform", scene_id, scene_revision,
                                    idempotency_key,
@@ -2079,12 +2097,26 @@ class BlenderMCPServer:
                 col.name = name
                 return collection_id, col.name
             obj = self._bas07_find(scene, object_id)
-            # Link destination first so failure never leaves object unlinked.
-            if col not in obj.users_collection:
-                col.objects.link(obj)
-            for old in list(obj.users_collection):
-                if old != col:
-                    old.objects.unlink(obj)
+            # Compensating transaction: undo all membership changes if a
+            # Blender link/unlink raises, preserving the original collections.
+            originals = list(obj.users_collection)
+            try:
+                if col not in originals:
+                    col.objects.link(obj)
+                for old in originals:
+                    if old != col:
+                        old.objects.unlink(obj)
+            except Exception:
+                try:
+                    for old in originals:
+                        if old not in obj.users_collection:
+                            old.objects.link(obj)
+                    for unwanted in list(obj.users_collection):
+                        if unwanted not in originals:
+                            unwanted.objects.unlink(obj)
+                except Exception:
+                    raise ValueError("conflict: partial_collection_change_unknown")
+                raise
             return object_id, obj.name
         return self._bas07_execute("manage_collection", scene_id, scene_revision,
                                    idempotency_key,
