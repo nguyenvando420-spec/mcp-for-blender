@@ -2335,11 +2335,15 @@ mcp._mcp_server.read_resource()(_read_resource_for_profile)
 def _studio_gateway():
     from .studio.registry import StudioGateway
     from .security_policy import Policy
+    from pathlib import Path
 
     def _bridge(command, params, read_only):
         return get_blender_connection().send_command(command, params, read_only=read_only)
 
-    return StudioGateway(_bridge, Policy(profile_from_env()))
+    configured_root = os.getenv("BLENDER_MCP_STUDIO_ROOT")
+    roots = (Path(configured_root),) if configured_root else ()
+    return StudioGateway(_bridge, Policy(profile_from_env(),
+                                         read_roots=roots, write_roots=roots))
 
 
 @mcp.tool()
@@ -2358,6 +2362,12 @@ def studio_scene_inspect(request: dict) -> dict:
 def studio_create_object(request: dict) -> dict:
     """Create a bounded primitive using a typed BAS-03 CreateObject JSON envelope."""
     return _studio_gateway().invoke(request, "studio_create_object")
+
+@mcp.tool()
+def studio_scene_snapshot(request: dict) -> dict:
+    """Save an immutable BLEND copy into the configured BAS-12 sandbox."""
+    return _studio_gateway().invoke(request, "studio_scene_snapshot")
+
 
 
 # Main execution
