@@ -179,14 +179,21 @@ class StudioGateway:
             ensure_supported(req, caps)
             _validate_numeric_bounds(req)
             if req.operation == "studio_scene_inspect":
+                binding = req.bind_missing_ids
                 reply = self.bridge(HANDLERS[req.operation], {
                     "query": req.query or "", "limit": req.limit, "offset": req.offset,
                     "object_id": str(req.object_id) if req.object_id else None,
-                }, True)
-                if req.scene_id is not None and (
-                    reply.get("scene_id") != str(req.scene_id)
-                    or reply.get("scene_revision") != req.scene_revision
-                ):
+                    "bind_missing_ids": binding,
+                    "scene_id": str(req.scene_id) if req.scene_id else None,
+                    "scene_revision": req.scene_revision,
+                    "idempotency_key": req.idempotency_key if binding else None,
+                }, not binding)
+                revision_ok = (req.scene_id is None or
+                               (reply.get("scene_id") == str(req.scene_id) and
+                                reply.get("scene_revision") in (
+                                    (req.scene_revision, req.scene_revision + 1)
+                                    if binding else (req.scene_revision,))))
+                if not revision_ok:
                     raise ValueError("stale_scene: inspect context changed")
                 result = ResultPayload(summary=json.dumps({
                     k: v for k, v in reply.items()

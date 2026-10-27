@@ -1025,7 +1025,10 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "const": "read",
+          "enum": [
+            "read",
+            "scene"
+          ],
           "title": "Effect Scope",
           "type": "string"
         },
@@ -1117,6 +1120,11 @@
           ],
           "default": null,
           "title": "Scene Revision"
+        },
+        "bind_missing_ids": {
+          "default": false,
+          "title": "Bind Missing Ids",
+          "type": "boolean"
         }
       },
       "required": [

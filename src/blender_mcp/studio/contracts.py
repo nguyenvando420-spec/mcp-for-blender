@@ -99,11 +99,23 @@ class RequestBase(StrictModel):
 
 class SceneInspect(RequestBase):
     operation: Literal["studio_scene_inspect"]
-    effect_scope: Literal[EffectScope.READ]
+    effect_scope: Literal[EffectScope.READ, EffectScope.SCENE]
     query: str | None = None
     limit: int = Field(default=20, ge=1, le=500)
     offset: int = Field(default=0, ge=0, le=1000000)
     object_id: UUID | None = None
+    bind_missing_ids: bool = False
+
+    @model_validator(mode="after")
+    def require_explicit_mutation_scope(self):
+        if self.bind_missing_ids:
+            if self.effect_scope != EffectScope.SCENE:
+                raise ValueError("ID binding must use scene mutation scope")
+            if self.query or self.offset or self.object_id is not None:
+                raise ValueError("ID binding requires whole scene")
+        elif self.effect_scope != EffectScope.READ:
+            raise ValueError("Normal inspection is read-only")
+        return self
 
 
 class CaptureViewport(RequestBase):

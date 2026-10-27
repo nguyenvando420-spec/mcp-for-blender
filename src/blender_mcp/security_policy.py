@@ -337,6 +337,10 @@ def authorize_studio_request(data: dict, policy: Policy, *,
     }[policy.profile]
     if request.operation not in allowed:
         raise PolicyDenied("Operation not allowlisted for this profile")
+    if (request.operation == "studio_scene_inspect"
+            and getattr(request, "bind_missing_ids", False)
+            and policy.profile not in (Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL)):
+        raise PolicyDenied("ID binding requires authorized local scene mutation")
     if policy.profile is Profile.REMOTE and not policy.authenticated:
         raise PolicyDenied("Remote caller requires authenticated API gateway")
     if policy.profile is Profile.WORKER and not policy.worker_job_id:
