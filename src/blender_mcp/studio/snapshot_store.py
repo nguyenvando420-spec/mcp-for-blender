@@ -13,7 +13,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
 
 class SnapshotError(ValueError):
@@ -137,6 +137,32 @@ class SnapshotStore:
         # Only Blender should write this pathname, and only in our private
         # directory. No user-controlled basename reaches bpy.
         return rid, self.root / ".bas12-snapshots" / rid / "scene.blend"
+
+    def begin_keyed(self, *, scene_id: str, scene_revision: int,
+                    idempotency_key: str, label: str = "") -> tuple[str, Path, bool]:
+        """Stable request reservation; do not repeat uncertain partial writes."""
+        sid = _uuid(scene_id)
+        if type(scene_revision) is not int or scene_revision < 0:
+            raise SnapshotError("Invalid scene revision")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise SnapshotError("Invalid idempotency key")
+        rid = str(uuid5(NAMESPACE_URL, json.dumps(
+            [str(self.root), sid, scene_revision, idempotency_key, label],
+            separators=(",", ":"))))
+        fd = self._folder(rid, create=True)
+        try:
+            names = os.listdir(fd)
+        finally:
+            os.close(fd)
+        if "manifest.json" in names:
+            existing = self.verify(rid)
+            if (existing.scene_id != sid or existing.scene_revision != scene_revision
+                    or existing.idempotency_key != idempotency_key):
+                raise SnapshotError("Snapshot reservation conflict")
+            return rid, existing.path, True
+        if "scene.blend" in names:
+            raise SnapshotError("Snapshot may have been written; state unknown")
+        return rid, self.root / ".bas12-snapshots" / rid / "scene.blend", False
 
     def finalize(self, snapshot_id: str, *, scene_id: str, scene_revision: int,
                  idempotency_key: str) -> Snapshot:
