@@ -169,13 +169,23 @@ class SnapshotStore:
         return rid, self.root / ".bas12-snapshots" / rid / "scene.blend", False
 
     def finalize(self, snapshot_id: str, *, scene_id: str, scene_revision: int,
-                 idempotency_key: str, label: str = "") -> Snapshot:
+                 idempotency_key: str, label: str = "",
+                 scene_inventory: list | None = None) -> Snapshot:
         rid = _uuid(snapshot_id)
         sid = _uuid(scene_id)
         if type(scene_revision) is not int or scene_revision < 0:
             raise SnapshotError("Invalid scene revision")
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
             raise SnapshotError("Invalid idempotency key")
+        objects = scene_inventory or []
+        if not isinstance(objects, list) or len(objects) > 4000:
+            raise SnapshotError("Invalid snapshot scene inventory")
+        for record in objects:
+            if (not isinstance(record, dict) or set(record) != {"object_id", "name"}
+                    or not isinstance(record["name"], str)
+                    or not 1 <= len(record["name"]) <= 256):
+                raise SnapshotError("Invalid snapshot object inventory")
+            _uuid(record["object_id"])
         fd = self._folder(rid)
         try:
             digest = hashlib.sha256()
@@ -205,7 +215,7 @@ class SnapshotStore:
                 "request_digest": hashlib.sha256(json.dumps(
                     [sid, scene_revision, idempotency_key, label],
                     separators=(",", ":")).encode()).hexdigest(),
-                "bytes": st.st_size,
+                "bytes": st.st_size, "scene_inventory": objects,
             }
             manifest = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
             _write_exclusive(fd, "manifest.json", manifest)
@@ -219,7 +229,7 @@ class SnapshotStore:
         rid = _uuid(snapshot_id)
         fd = self._folder(rid)
         try:
-            content = _read(fd, "manifest.json", 4096)
+            content = _read(fd, "manifest.json", 1024 * 1024)
             try:
                 manifest = json.loads(content)
                 if (manifest["version"] != 1 or manifest["snapshot_id"] != rid
