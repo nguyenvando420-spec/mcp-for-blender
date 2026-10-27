@@ -433,7 +433,7 @@ class StudioGateway:
                         snapshot_id=UUID(backup_id),
                         scene_diff=SceneDiff(deleted=[req.object_id]),
                         summary="Object deleted with pre-delete snapshot=" + backup_id)
-                except (SnapshotError, OSError) as exc:
+                except Exception as exc:
                     return self._failed(raw, ErrorCode.CONFLICT,
                                         "Delete denied or state unknown: " + type(exc).__name__,
                                         details={"pre_delete_snapshot_id": backup_id or "",
