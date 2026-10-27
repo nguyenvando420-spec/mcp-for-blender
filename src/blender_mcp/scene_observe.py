@@ -10,8 +10,8 @@ import json
 import math
 import uuid
 
-ID_KEY = "studio_object_id"
-MAX_PAGE_SIZE = 200
+ID_KEY = "_bas05_object_id"
+MAX_PAGE_SIZE = 500
 
 
 def _number(value):
@@ -50,7 +50,7 @@ def observe_scene(scene, *, offset=0, limit=100, object_id=None, assign_ids=Fals
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
         raise ValueError("offset must be a nonnegative integer")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_PAGE_SIZE:
-        raise ValueError("limit must be between 1 and 200")
+        raise ValueError("limit must be between 1 and 500")
     if object_id is not None:
         object_id = str(uuid.UUID(object_id))
 
@@ -72,6 +72,8 @@ def observe_scene(scene, *, offset=0, limit=100, object_id=None, assign_ids=Fals
         ids[id(obj)] = stable_id
 
     if object_id is not None:
+        if sum(_object_id(obj) == object_id for obj in objects) > 1 and not assign_ids:
+            raise ValueError("conflict: duplicate UUID")
         matches = [obj for obj in objects if ids[id(obj)] == object_id]
         if not matches:
             raise LookupError("object_id not found; refresh scene summary")
