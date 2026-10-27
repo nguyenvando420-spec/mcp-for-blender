@@ -1,6 +1,13 @@
 """BAS-09 manifest fail-closed tests independent of Blender."""
 import json
-from scripts.bas09_ci_report import classify, skips, gui
+import importlib.util
+from pathlib import Path
+
+path = Path(__file__).resolve().parents[1] / 'scripts' / 'bas09_ci_report.py'
+spec = importlib.util.spec_from_file_location('bas09_ci_report', path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+classify, skips, gui = module.classify, module.skips, module.gui
 
 
 def test_skip_categories():
