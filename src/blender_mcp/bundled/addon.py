@@ -1489,7 +1489,8 @@ class BlenderMCPServer:
             return True, ""
         if cmd_type in self.READ_COMMANDS:
             return True, ""
-        if self.profile == "studio-local" and cmd_type == "studio_create_object_v1":
+        if self.profile == "studio-local" and (cmd_type == "studio_create_object_v1" or
+                (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT"))):
             return True, ""
         return False, "permission_denied"
 
@@ -1701,6 +1702,7 @@ class BlenderMCPServer:
             "get_scene_info": self.get_scene_info,
             "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
             "studio_create_object_v1": self.studio_create_object_v1,
+            "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1810,6 +1812,7 @@ class BlenderMCPServer:
                 "get_scene_info",
                 "studio_scene_inspect_v1",
                 "studio_create_object_v1",
+                "studio_scene_snapshot_v1",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -1901,6 +1904,64 @@ class BlenderMCPServer:
             cache.pop(next(iter(cache)))
         scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
         return reply
+
+    def _bas12_snapshot_path(self, snapshot_id, path):
+        """Require a private preallocated sandbox directory at add-on ingress.
+
+        This is a separate check from MCP gateway policy: a local caller with
+        a socket token must not choose arbitrary save filenames.
+        """
+        from pathlib import Path
+        try:
+            ident = str(uuid.UUID(snapshot_id))
+            root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+            raw = Path(path)
+            if (not root.is_absolute() or ".." in root.parts
+                    or root.is_symlink() or root.resolve(strict=True) != root
+                    or root.stat().st_mode & 0o022
+                    or not raw.is_absolute() or ".." in raw.parts
+                    or raw.relative_to(root).parts !=
+                    (".bas12-snapshots", ident, "scene.blend")):
+                raise ValueError("permission_denied: invalid sandbox path")
+            cursor = root
+            for name in (".bas12-snapshots", ident):
+                cursor = cursor / name
+                if cursor.is_symlink() or not cursor.is_dir() or cursor.stat().st_mode & 0o077:
+                    raise ValueError("permission_denied: unsafe snapshot folder")
+            if raw.exists() or raw.is_symlink():
+                raise ValueError("conflict: snapshot output already exists")
+            return raw
+        except (KeyError, ValueError, OSError, TypeError):
+            raise ValueError("permission_denied: BAS-12 sandbox path denied")
+
+    def studio_scene_snapshot_v1(self, scene_id, scene_revision, snapshot_id, path):
+        """Main-thread Blender BLEND copy; DOES NOT overwrite the active file."""
+        scene, current_id, revision = self._studio_scene_context_v1()
+        if scene_id != current_id or type(scene_revision) is not int or scene_revision != revision:
+            raise ValueError("stale_scene: scene UUID/revision mismatch")
+        target = self._bas12_snapshot_path(snapshot_id, path)
+        # bpy saves this COPY without changing the current .blend path.
+        # This folder is private, UUID-addressed and preallocated by gateway.
+        result = bpy.ops.wm.save_as_mainfile(filepath=str(target), copy=True)
+        if "FINISHED" not in result:
+            raise RuntimeError("Snapshot save did not finish")
+        sha = hashlib.sha256()
+        count = 0
+        with target.open("rb") as source:
+            if source.read(7) != b"BLENDER":
+                raise ValueError("conflict: snapshot has invalid file header")
+            source.seek(0)
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > 2 << 30:
+                    raise ValueError("conflict: snapshot exceeds 2GiB")
+                sha.update(chunk)
+        return {"scene_id": current_id, "scene_revision": revision,
+                "snapshot_id": str(uuid.UUID(snapshot_id)),
+                "sha256": sha.hexdigest(), "bytes": count}
 
     def get_scene_info(self):
         """Get information about the current Blender scene"""
