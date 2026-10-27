@@ -317,6 +317,54 @@ async def accept(port, record):
                                object_id=cube_id, action="rename",
                                name="BAS07_FinalCube") == cube_id
 
+            # Simulate user edits in Blender's GUI main-thread timer. These
+            # do not enter the MCP dispatcher and do NOT advance BAS-05 rev.
+            # Each action must invalidate an otherwise valid delete preview.
+            gui_actions = []
+            for action in ("translate", "mesh_vertex", "material", "camera", "rename"):
+                stale_preview = unpack(await client.call_tool(
+                    "studio_scene_snapshot", {"request": {
+                        "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                        "effect_scope": "file", "scene_id": newid,
+                        "scene_revision": basrev,
+                        "idempotency_key": "bas07-gui-preview-" + action,
+                        "label": "gui-edit-preview-" + action}}))
+                assert stale_preview["status"] == "succeeded", stale_preview
+                stale_id = stale_preview["result"]["snapshot_id"]
+                change_request = output / "bas07-direct-edit.request.json"
+                change_result = output / "bas07-direct-edit.result.json"
+                if change_result.exists():
+                    change_result.unlink()
+                change_request.write_text(json.dumps({
+                    "action": action, "object_id": cube_id}))
+                deadline = time.monotonic() + 15
+                while not change_result.exists() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.1)
+                assert change_result.exists(), "GUI timer did not acknowledge edit"
+                ack = json.loads(change_result.read_text())
+                assert ack["success"], ack
+                assert ack["before_revision"] == ack["after_revision"] == basrev, ack
+                blocked_token = issue_resource_confirmation(
+                    secret, operation="studio_delete_object", scene_id=newid,
+                    scene_revision=basrev, snapshot_id=stale_id, resource=cube_id)
+                rejected = unpack(await client.call_tool("studio_delete_object", {"request": {
+                    "operation": "studio_delete_object", "request_id": str(uuid4()),
+                    "effect_scope": "scene", "scene_id": newid, "scene_revision": basrev,
+                    "idempotency_key": "bas07-gui-delete-" + action,
+                    "object_id": cube_id, "snapshot_id": stale_id,
+                    "confirmation_token": blocked_token}}))
+                assert rejected["status"] == "failed", (action, rejected)
+                assert rejected["error"]["code"] == "conflict", (action, rejected)
+                live = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                    "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                    "effect_scope": "read", "limit": 200}}))
+                assert live["scene_revision"] == basrev, (action, live)
+                assert any(x["object_id"] == cube_id for x in
+                           json.loads(live["result"]["summary"])["objects"]), action
+                gui_actions.append({"action": action, "rejected": True,
+                                    "revision_unchanged": True})
+            record["bas07_out_of_band_gui"] = gui_actions
+
             preview = unpack(await client.call_tool("studio_scene_snapshot", {"request": {
                 "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
                 "effect_scope": "file", "scene_id": newid, "scene_revision": basrev,
