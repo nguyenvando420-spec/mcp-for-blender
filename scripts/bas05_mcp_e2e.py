@@ -535,52 +535,6 @@ async def accept(port, record):
                                "pre_delete_backup": deleted["result"]["snapshot_id"],
                                "deleted_object_id": duplicate_id,
                                "final_revision": basrev}
-            # BAS-08 controlled metadata upgrade for objects/collections/materials
-            # created before the MCP project assigned stable UUIDs.
-            prebind = json.loads(final["result"]["summary"])
-            assert any(row["name"] == "Cube" and row["object_id"] is None
-                       for row in prebind["objects"]), "Expected factory Cube without UUID"
-            bind_req = {
-                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
-                "effect_scope": "scene", "scene_id": newid,
-                "scene_revision": basrev, "idempotency_key": "bas08-id-bootstrap",
-                "bind_missing_ids": True, "limit": 200}
-            owner_bound = unpack(await client.call_tool(
-                "studio_scene_inspect", {"request": bind_req}))
-            assert owner_bound["status"] == "succeeded", owner_bound
-            assert owner_bound["scene_revision"] == basrev + 1, owner_bound
-            basrev += 1
-            bound_state = json.loads(owner_bound["result"]["summary"])
-            assert bound_state["ids_bound"] >= 3
-            cube = next(row for row in bound_state["objects"] if row["name"] == "Cube")
-            assert cube["object_id"]
-            assert all(row["object_id"] for row in bound_state["objects"])
-            assert all(x["collection_id"] for x in bound_state["collections"])
-            golden_row = next(row for row in bound_state["objects"] if row["name"] == "Cube")
-            assert golden_row["materials"] and golden_row["materials"][0]["material_id"]
-            cube_uuid = cube["object_id"]
-            # No-op rerun cannot silently bump revision or change any UUID.
-            second = unpack(await client.call_tool("studio_scene_inspect", {"request": {
-                **bind_req, "request_id": str(uuid4()), "scene_revision": basrev,
-                "idempotency_key": "bas08-id-bootstrap-noop"}}))
-            assert second["status"] == "succeeded", second
-            assert second["scene_revision"] == basrev
-            assert json.loads(second["result"]["summary"])["ids_bound"] == 0
-            looked_up = unpack(await client.call_tool("studio_scene_inspect", {"request": {
-                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
-                "effect_scope": "read", "object_id": cube_uuid, "limit": 1}}))
-            assert looked_up["status"] == "succeeded"
-            assert json.loads(looked_up["result"]["summary"])["objects"][0]["name"] == "Cube"
-            observer_forge = unpack(await client.call_tool("studio_scene_inspect", {"request": {
-                **bind_req, "request_id": str(uuid4()), "effect_scope": "read"}}))
-            assert observer_forge["error"]["code"] == "invalid_input", observer_forge
-            record["bas08_binding"] = {
-                "ids_bound": bound_state["ids_bound"], "cube_id": cube_uuid,
-                "no_op_revision_preserved": True, "material_bound": True,
-                "collections_bound": True}
-
-            # Real Blender GUI negative cases, not mocks. The GUI timer changes
-            # the window's scene/editor outside MCP and acknowledges each step.
             async def bas08_probe(action):
                 folder = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent
                 req_path = folder / "bas08-negative.request.json"
@@ -595,6 +549,60 @@ async def accept(port, record):
                 assert ack.get("ok") is True, ack
                 return ack
 
+
+            # BAS-08 controlled metadata upgrade for objects/collections/materials
+            # created before the MCP project assigned stable UUIDs.
+            await bas08_probe("create_untracked")
+            untracked = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 200}}))
+            assert untracked["status"] == "succeeded", untracked
+            assert untracked["scene_revision"] == basrev + 1
+            basrev = untracked["scene_revision"]
+            prebind = json.loads(untracked["result"]["summary"])
+            assert any(row["name"] == "BAS08_ManualObject" and row["object_id"] is None
+                       for row in prebind["objects"]), "GUI-created object should have no UUID"
+            bind_req = {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas08-id-bootstrap",
+                "bind_missing_ids": True, "limit": 200}
+            owner_bound = unpack(await client.call_tool(
+                "studio_scene_inspect", {"request": bind_req}))
+            assert owner_bound["status"] == "succeeded", owner_bound
+            assert owner_bound["scene_revision"] == basrev + 1, owner_bound
+            basrev += 1
+            bound_state = json.loads(owner_bound["result"]["summary"])
+            assert bound_state["ids_bound"] >= 3
+            cube = next(row for row in bound_state["objects"] if row["name"] == "BAS08_ManualObject")
+            assert cube["object_id"]
+            assert all(row["object_id"] for row in bound_state["objects"])
+            assert all(x["collection_id"] for x in bound_state["collections"])
+            golden_row = next(row for row in bound_state["objects"] if row["name"] == "BAS08_ManualObject")
+            assert golden_row["materials"] and golden_row["materials"][0]["material_id"]
+            cube_uuid = cube["object_id"]
+            # No-op rerun cannot silently bump revision or change any UUID.
+            second = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                **bind_req, "request_id": str(uuid4()), "scene_revision": basrev,
+                "idempotency_key": "bas08-id-bootstrap-noop"}}))
+            assert second["status"] == "succeeded", second
+            assert second["scene_revision"] == basrev
+            assert json.loads(second["result"]["summary"])["ids_bound"] == 0
+            looked_up = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "object_id": cube_uuid, "limit": 1}}))
+            assert looked_up["status"] == "succeeded"
+            assert json.loads(looked_up["result"]["summary"])["objects"][0]["name"] == "BAS08_ManualObject"
+            observer_forge = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                **bind_req, "request_id": str(uuid4()), "effect_scope": "read"}}))
+            assert observer_forge["error"]["code"] == "invalid_input", observer_forge
+            record["bas08_binding"] = {
+                "ids_bound": bound_state["ids_bound"], "cube_id": cube_uuid,
+                "no_op_revision_preserved": True, "material_bound": True,
+                "collections_bound": True}
+
+            # Real Blender GUI negative cases, not mocks. The GUI timer changes
+            # the window's scene/editor outside MCP and acknowledges each step.
             await bas08_probe("empty")
             empty = unpack(await client.call_tool("studio_scene_inspect", {"request": {
                 "operation": "studio_scene_inspect", "request_id": str(uuid4()),
