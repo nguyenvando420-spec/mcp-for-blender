@@ -43,19 +43,34 @@ jobs:
       - name: Lint new baseline scripts
         run: uv run --frozen --python ${{ matrix.python-version }} --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py tests/test_golden_runtime.py tests/test_studio_contracts.py src/blender_mcp/studio scripts
       - name: Run upstream and fork unit tests
-        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -q
+        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -q -rs --junitxml="${{ runner.temp }}/bas09-pytest.xml"
+      - name: Inventory skipped tests
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/bas09_ci_report.py pytest --input "${{ runner.temp }}/bas09-pytest.xml" --output "${{ runner.temp }}/bas09-pytest-skips.json"
       - name: BAS-06 ten restart/rebind cycles with diagnostic log
         run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -s -q tests/test_bas06_socket_security.py::test_ten_successive_restart_rebind_cycles
+      - name: Upload BAS09 skipped test inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bas09-python-${{ matrix.python-version }}-skips
+          path: |
+            ${{ runner.temp }}/bas09-pytest.xml
+            ${{ runner.temp }}/bas09-pytest-skips.json
+          if-no-files-found: warn
       - name: Check fork CLI entrypoint
         run: uv run --frozen --python ${{ matrix.python-version }} mcp-for-blender --help
       - name: Build source and wheel distributions
         run: uv build
 
   blender-headless-smoke:
-    name: Blender 4.5.15 golden CPU (PR/manual)
+    name: Blender 4.5.15 MCP GUI / Python ${{ matrix.python-version }}
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11.14', '3.12.14']
     env:
       DISABLE_TELEMETRY: 'true'
     steps:
@@ -64,22 +79,24 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: '3.12.14'
+          python-version: ${{ matrix.python-version }}
       - name: Install shared libraries (Blender itself is checksum-pinned)
         run: sudo apt-get update && sudo apt-get install -y libxrender1 libxi6 libxfixes3 libxkbcommon0 libsm6 libgl1 xvfb xauth
       - name: Render and reopen golden scene with the pinned runtime
-        run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden"
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden"
       - name: Verify evidence bundle
-        run: uv run --frozen python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/run_golden.py --output-dir "${{ runner.temp }}/blender-golden" --verify-only
       - name: BAS-05/BAS-06 MCP GUI E2E + 100-command stress (Xvfb)
-        run: uv run --frozen python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
       - name: BAS-06 real independent Blender render worker + durable SQLite recovery
-        run: uv run --frozen python scripts/bas06_worker_e2e.py --scene "${{ runner.temp }}/bas05-mcp-gui/bas05-scene.blend" --output-dir "${{ runner.temp }}/bas06-worker"
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/bas06_worker_e2e.py --scene "${{ runner.temp }}/bas05-mcp-gui/bas05-scene.blend" --output-dir "${{ runner.temp }}/bas06-worker"
+      - name: Validate BAS09 thirteen integration cases
+        run: uv run --frozen --python ${{ matrix.python-version }} python scripts/bas09_ci_report.py gui --input "${{ runner.temp }}/bas05-mcp-gui/bas05-e2e.json" --output "${{ runner.temp }}/bas05-mcp-gui/bas09-evidence.json"
       - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bas02-bas06-blender-evidence
+          name: bas09-gui-python-${{ matrix.python-version }}-evidence
           path: |
             ${{ runner.temp }}/blender-golden
             ${{ runner.temp }}/bas05-mcp-gui
