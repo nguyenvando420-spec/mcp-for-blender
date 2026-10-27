@@ -26,6 +26,7 @@ HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
     "studio_create_object": "studio_create_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
+    "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
 MUTATION_TOOLS = frozenset({"studio_create_object"})
@@ -36,14 +37,17 @@ def visible_studio_tools(profile):
     from ..security_policy import Profile
     if profile in (Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
         return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
-                | ({"studio_scene_snapshot"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set()))
+                | ({"studio_scene_snapshot"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
+                | ({"studio_scene_restore"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set()))
     return frozenset()
 
 
 class StudioGateway:
-    def __init__(self, bridge: Callable[[str, dict, bool], dict], policy: Policy):
+    def __init__(self, bridge: Callable[[str, dict, bool], dict], policy: Policy,
+                 confirmation_secret: bytes | None = None):
         self.bridge = bridge
         self.policy = policy
+        self.confirmation_secret = confirmation_secret
 
     def _info(self):
         data = self.bridge("get_addon_info", {}, True)
@@ -128,7 +132,8 @@ class StudioGateway:
         try:
             # Validate & authorize before any Blender operation. Even hidden tools
             # are protected by server.py's tools/call dispatcher.
-            req = authorize_studio_request(raw, self.policy)
+            req = authorize_studio_request(raw, self.policy,
+                                           confirmation_secret=self.confirmation_secret)
             caps = self.capabilities()
             ensure_supported(req, caps)
             if req.operation == "studio_scene_inspect":
@@ -172,6 +177,45 @@ class StudioGateway:
                 except (SnapshotError, OSError) as exc:
                     return self._failed(raw, ErrorCode.CONFLICT,
                                         "Snapshot failed or execution state unknown: " + type(exc).__name__)
+            elif req.operation == "studio_scene_restore":
+                from .snapshot_store import SnapshotStore, SnapshotError
+                try:
+                    store = SnapshotStore(os.getenv("BLENDER_MCP_STUDIO_ROOT", ""))
+                    source = store.verify(str(req.snapshot_id))
+                    if source.scene_id != str(req.scene_id):
+                        raise SnapshotError("Snapshot belongs to another scene")
+                    # Capture current state BEFORE any Blender side effect. A
+                    # failed snapshot must fail closed, never switch scenes.
+                    backup_id, backup_path, completed = store.begin_keyed(
+                        scene_id=str(req.scene_id), scene_revision=req.scene_revision,
+                        idempotency_key="pre-restore:" + req.idempotency_key)
+                    if not completed:
+                        saved = self.bridge(HANDLERS["studio_scene_snapshot"], {
+                            "scene_id": str(req.scene_id),
+                            "scene_revision": req.scene_revision,
+                            "snapshot_id": backup_id, "path": str(backup_path)}, False)
+                        backup = store.finalize(
+                            backup_id, scene_id=str(req.scene_id),
+                            scene_revision=req.scene_revision,
+                            idempotency_key="pre-restore:" + req.idempotency_key)
+                        if saved.get("sha256") != backup.sha256:
+                            raise SnapshotError("Backup checksum mismatch")
+                    self.bridge(HANDLERS[req.operation], {
+                        "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
+                        "snapshot_id": source.snapshot_id,
+                        "path": str(source.path), "sha256": source.sha256,
+                        "confirmation_token": req.confirmation_token,
+                        "backup_snapshot_id": backup_id}, False)
+                    # Addon switches the active scene to a verified library
+                    # copy and increments the current revision.
+                    reply = {"scene_id": str(req.scene_id),
+                             "scene_revision": req.scene_revision + 1}
+                    result = ResultPayload(
+                        snapshot_id=UUID(backup_id),
+                        summary="Restore committed; pre-restore backup=" + backup_id)
+                except (SnapshotError, OSError) as exc:
+                    return self._failed(raw, ErrorCode.CONFLICT,
+                                        "Restore denied or state unknown: " + type(exc).__name__)
             elif req.operation == "studio_create_object":
                 if not isinstance(req.spec, PrimitiveSpec):
                     return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
