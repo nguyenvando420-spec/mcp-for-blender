@@ -535,6 +535,99 @@ async def accept(port, record):
                                "pre_delete_backup": deleted["result"]["snapshot_id"],
                                "deleted_object_id": duplicate_id,
                                "final_revision": basrev}
+            # BAS-08 controlled metadata upgrade for objects/collections/materials
+            # created before the MCP project assigned stable UUIDs.
+            prebind = json.loads(final["result"]["summary"])
+            assert any(row["name"] == "Cube" and row["object_id"] is None
+                       for row in prebind["objects"]), "Expected factory Cube without UUID"
+            bind_req = {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas08-id-bootstrap",
+                "bind_missing_ids": True, "limit": 200}
+            owner_bound = unpack(await client.call_tool(
+                "studio_scene_inspect", {"request": bind_req}))
+            assert owner_bound["status"] == "succeeded", owner_bound
+            assert owner_bound["scene_revision"] == basrev + 1, owner_bound
+            basrev += 1
+            bound_state = json.loads(owner_bound["result"]["summary"])
+            assert bound_state["ids_bound"] >= 3
+            cube = next(row for row in bound_state["objects"] if row["name"] == "Cube")
+            assert cube["object_id"]
+            assert all(row["object_id"] for row in bound_state["objects"])
+            assert all(x["collection_id"] for x in bound_state["collections"])
+            golden_row = next(row for row in bound_state["objects"] if row["name"] == "Cube")
+            assert golden_row["materials"] and golden_row["materials"][0]["material_id"]
+            cube_uuid = cube["object_id"]
+            # No-op rerun cannot silently bump revision or change any UUID.
+            second = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                **bind_req, "request_id": str(uuid4()), "scene_revision": basrev,
+                "idempotency_key": "bas08-id-bootstrap-noop"}}))
+            assert second["status"] == "succeeded", second
+            assert second["scene_revision"] == basrev
+            assert json.loads(second["result"]["summary"])["ids_bound"] == 0
+            looked_up = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "object_id": cube_uuid, "limit": 1}}))
+            assert looked_up["status"] == "succeeded"
+            assert json.loads(looked_up["result"]["summary"])["objects"][0]["name"] == "Cube"
+            observer_forge = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                **bind_req, "request_id": str(uuid4()), "effect_scope": "read"}}))
+            assert observer_forge["error"]["code"] == "invalid_input", observer_forge
+            record["bas08_binding"] = {
+                "ids_bound": bound_state["ids_bound"], "cube_id": cube_uuid,
+                "no_op_revision_preserved": True, "material_bound": True,
+                "collections_bound": True}
+
+            # Real Blender GUI negative cases, not mocks. The GUI timer changes
+            # the window's scene/editor outside MCP and acknowledges each step.
+            async def bas08_probe(action):
+                folder = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent
+                req_path = folder / "bas08-negative.request.json"
+                ack_path = folder / "bas08-negative.result.json"
+                ack_path.unlink(missing_ok=True)
+                req_path.write_text(json.dumps({"action": action}))
+                deadline = time.monotonic() + 15
+                while not ack_path.exists() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.1)
+                assert ack_path.exists(), "BAS-08 GUI negative probe timed out: " + action
+                ack = json.loads(ack_path.read_text())
+                assert ack.get("ok") is True, ack
+                return ack
+
+            await bas08_probe("empty")
+            empty = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 20}}))
+            assert empty["status"] == "succeeded", empty
+            blank = json.loads(empty["result"]["summary"])
+            assert blank["object_count"] == 0 and blank["camera"] is None
+            no_camera = unpack(await client.call_tool("studio_capture_viewport", {"request": {
+                "operation": "studio_capture_viewport", "request_id": str(uuid4()),
+                "effect_scope": "read", "scene_id": empty["scene_id"],
+                "scene_revision": empty["scene_revision"],
+                "mode": "camera", "max_size": 320}}))
+            assert no_camera["error"]["code"] == "capability_unavailable", no_camera
+            await bas08_probe("hide_viewport")
+            no_view = unpack(await client.call_tool("studio_capture_viewport", {"request": {
+                "operation": "studio_capture_viewport", "request_id": str(uuid4()),
+                "effect_scope": "read", "scene_id": empty["scene_id"],
+                "scene_revision": empty["scene_revision"],
+                "mode": "viewport", "max_size": 320}}))
+            assert no_view["error"]["code"] == "capability_unavailable", no_view
+            await bas08_probe("restore")
+            recovered = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "object_id": cube_uuid, "limit": 1}}))
+            assert recovered["status"] == "succeeded", recovered
+            assert recovered["scene_id"] == newid
+            assert recovered["scene_revision"] == basrev
+            assert json.loads(recovered["result"]["summary"])["objects"][0]["object_id"] == cube_uuid
+            record["bas08_negative_gui"] = {
+                "empty_scene": True, "no_camera": no_camera["error"]["code"],
+                "no_viewport": no_view["error"]["code"],
+                "restored_original_scene": True}
+
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 53,
                                        "after_revision": rev + 54,
                                        "backup_id": restored["result"]["snapshot_id"]}
