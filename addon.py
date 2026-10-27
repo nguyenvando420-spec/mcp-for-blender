@@ -2017,7 +2017,7 @@ class BlenderMCPServer:
                                             inputs.append([key, vec(value)])
                                         except TypeError:
                                             inputs.append([key, float(value).hex()])
-                                add(["shader", node.name_full, inputs])
+                                add(["shader", node.name, inputs])
         return digest.hexdigest()
 
     def studio_scene_snapshot_v1(self, scene_id, scene_revision, snapshot_id, path):
