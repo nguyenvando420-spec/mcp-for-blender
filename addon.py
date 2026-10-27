@@ -1871,7 +1871,7 @@ class BlenderMCPServer:
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
             raise ValueError("invalid_input: invalid idempotency key")
         if (not isinstance(location, (list, tuple)) or len(location) != 3
-                or any(type(v) not in (int, float) or not math.isfinite(v) for v in location)):
+                or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 100000.0 for v in location)):
             raise ValueError("invalid_input: invalid location")
         scene, current_id, revision = self._studio_scene_context_v1()
         payload = json.dumps([scene_id, scene_revision, name, primitive, location],
