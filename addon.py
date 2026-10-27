@@ -1965,7 +1965,11 @@ class BlenderMCPServer:
                 sha.update(chunk)
         return {"scene_id": current_id, "scene_revision": revision,
                 "snapshot_id": str(uuid.UUID(snapshot_id)),
-                "sha256": sha.hexdigest(), "bytes": count}
+                "sha256": sha.hexdigest(), "bytes": count,
+                "objects": [{"object_id": str(obj.get("_bas05_object_id")),
+                             "name": obj.name}
+                            for obj in scene.objects
+                            if obj.get("_bas05_object_id")][:4000]}
 
     def _bas12_read_snapshot(self, snapshot_id, path, expected_sha256):
         """Verify known UUID path, manifest and content before any scene import."""
@@ -2097,13 +2101,32 @@ class BlenderMCPServer:
         # scene changes. A crash after consumption returns UNKNOWN, no replay.
         self._bas12_consume_confirmation(nonce)
         original = bpy.context.window.scene
+        # Blender library import auto-suffixes colliding object names. The
+        # immutable snapshot inventory carries the original stable UUID/name
+        # mapping; release those names on the old (retained) scene before
+        # applying them to the imported scene.
+        name_index = {str(item["object_id"]): item["name"]
+                      for item in manifest.get("scene_inventory", [])
+                      if isinstance(item, dict) and "object_id" in item and "name" in item}
+        renamed_previous = []
         try:
+            for obj in original.objects:
+                oid = str(obj.get("_bas05_object_id", ""))
+                if oid in name_index and obj.name == name_index[oid]:
+                    renamed_previous.append((obj, obj.name))
+                    obj.name = "__BAS12_previous_" + uuid.uuid4().hex
+            for obj in target.objects:
+                oid = str(obj.get("_bas05_object_id", ""))
+                if oid in name_index:
+                    obj.name = name_index[oid]
             target["_bas05_scene_revision"] = revision + 1
             target["_bas12_restore_source"] = snapshot_id
             bpy.context.window.scene = target
         except Exception:
             try:
                 bpy.context.window.scene = original
+                for obj, previous_name in renamed_previous:
+                    obj.name = previous_name
             except Exception:
                 pass
             raise ValueError("conflict: restore failed, original retained where possible")
