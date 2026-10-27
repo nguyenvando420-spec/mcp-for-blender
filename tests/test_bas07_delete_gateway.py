@@ -17,6 +17,7 @@ class Bridge:
         self.sid, self.oid, self.revision = sid, oid, 3
         self.calls = []
         self.deleted = False
+        self.gui_state = "unchanged"
 
     def __call__(self, cmd, params, read_only):
         self.calls.append((cmd, params))
@@ -30,7 +31,8 @@ class Bridge:
             path.write_bytes(b"BLENDER-v450" + b"data" * 40)
             return {"scene_id": self.sid, "scene_revision": self.revision,
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                    "objects": [{"object_id": self.oid, "name": "Target"}]}
+                    "objects": [{"object_id": self.oid, "name": "Target"}],
+                    "scene_fingerprint": hashlib.sha256(self.gui_state.encode()).hexdigest()}
         if cmd == "studio_delete_object_v1":
             assert not self.deleted
             assert params["object_id"] == self.oid
@@ -145,3 +147,29 @@ def test_unknown_transport_after_delete_reports_recovery_checkpoint(ctx):
                            "studio_delete_object")
     assert again["status"] == "failed"
     assert [x[0] for x in bridge.calls].count("studio_delete_object_v1") == 1
+
+
+
+@pytest.mark.parametrize("manual_edit", ["translate", "mesh_vertex", "material", "camera"])
+def test_untracked_manual_gui_edit_rejects_delete_without_revision_change(ctx, manual_edit):
+    gateway, bridge, root, sid, oid = ctx
+    before_revision = bridge.revision
+    preview = gateway.invoke(envelope("studio_scene_snapshot", sid, before_revision,
+                                      "preview-" + manual_edit, scope="file"),
+                             "studio_scene_snapshot")
+    assert preview["status"] == "succeeded", preview
+    approved_id = preview["result"]["snapshot_id"]
+    token = issue_resource_confirmation(
+        SECRET, operation="studio_delete_object", scene_id=sid,
+        scene_revision=before_revision, snapshot_id=approved_id, resource=oid)
+    # Direct Blender edit, outside MCP, does not increment the BAS-05 revision.
+    bridge.gui_state = manual_edit
+    assert bridge.revision == before_revision
+    rejected = gateway.invoke(envelope(
+        "studio_delete_object", sid, before_revision, "delete-" + manual_edit,
+        object_id=oid, snapshot_id=approved_id, confirmation_token=token),
+        "studio_delete_object")
+    assert rejected["status"] == "failed", rejected
+    assert rejected["error"]["code"] == "conflict"
+    assert bridge.deleted is False
+    assert not any(call[0] == "studio_delete_object_v1" for call in bridge.calls)
