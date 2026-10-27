@@ -65,7 +65,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot"} <= set(handshake["operations"])
+            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot", "studio_scene_restore"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
@@ -158,6 +158,40 @@ async def accept(port, record):
             assert manifest["scene_id"] == sid
             assert manifest["scene_revision"] == rev + 51
             assert manifest["sha256"] == hashlib.sha256(scene_copy.read_bytes()).hexdigest()
+            # Mutate then restore with a one-shot trusted acceptance token.
+            mutation = {
+                "operation": "studio_create_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": sid,
+                "scene_revision": rev + 51, "idempotency_key": "bas12-restore-probe",
+                "name": "BAS12_Throwaway",
+                "spec": {"kind": "primitive", "primitive": "cube"},
+            }
+            added = unpack(await client.call_tool("studio_create_object",
+                                                   {"request": mutation}))
+            assert added["status"] == "succeeded", added
+            from blender_mcp.security_policy import issue_confirmation
+            secret = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            confirm = issue_confirmation(
+                secret, operation="studio_scene_restore", scene_id=sid,
+                scene_revision=rev + 52, snapshot_id=snapshot_id)
+            restored = unpack(await client.call_tool("studio_scene_restore", {"request": {
+                "operation": "studio_scene_restore", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 52,
+                "idempotency_key": "bas12-restore-case", "snapshot_id": snapshot_id,
+                "confirmation_token": confirm}}))
+            assert restored["status"] == "succeeded", restored
+            assert restored["scene_revision"] == rev + 53, restored
+            restored_inspect = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 100}}))
+            assert restored_inspect["scene_revision"] == rev + 53
+            restored_objects = json.loads(restored_inspect["result"]["summary"])["objects"]
+            assert not any(item["name"] == "BAS12_Throwaway" for item in restored_objects)
+            assert any(item["object_id"] == oid for item in restored_objects)
+            assert restored["result"]["snapshot_id"] != snapshot_id  # pre-restore backup ID
+            record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
+                                       "after_revision": rev + 53,
+                                       "backup_id": restored["result"]["snapshot_id"]}
             record["bas12_snapshot"] = {
                 "snapshot_id": snapshot_id, "sha256": manifest["sha256"],
                 "bytes": manifest["bytes"], "replay": True,
@@ -183,6 +217,7 @@ def main():
     studio_root.mkdir(mode=0o700, exist_ok=True)
     studio_root.chmod(0o700)
     os.environ["BLENDER_MCP_STUDIO_ROOT"] = str(studio_root)
+    os.environ["BLENDER_MCP_CONFIRM_SECRET"] = secrets.token_urlsafe(32)
     spec = json.loads((ROOT / "blender-runtime.json").read_text())
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     blender = ROOT / ".blender-runtime" / "runtime" / spec["artifacts"]["Linux-x86_64"]["executable"]
