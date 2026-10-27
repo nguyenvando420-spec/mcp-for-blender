@@ -45,3 +45,48 @@ Set `BLENDER_MCP_STUDIO_ROOT` to an existing canonical, private directory (mode 
 ## Test commands
 
 `uv run --frozen --python 3.11.14 --with pytest==8.4.2 pytest -q`; repeat with 3.12.14. PR CI also runs `scripts/bas05_mcp_e2e.py` against Blender 4.5.15 Xvfb, then `scripts/bas12_snapshot_reopen.py` headless. Evidence under `bas02-bas06-blender-evidence` archive (snapshot and manifest in `bas05-mcp-gui/studio-sandbox`).
+
+## Release acceptance profile: owner self-acceptance, Linux GUI MCP only
+
+Decision date: 2026-10-27. Owner `nguyenvando420-spec` elected repository-owner
+self-acceptance instead of a second independent GitHub reviewer. This **does not**
+claim independent approval. Supported acceptance profile is **Linux x86_64,
+Blender 4.5.15, private single-writer POSIX workspace, local authenticated MCP
+client, explicitly trusted UI-issued HMAC confirmations**.
+
+For this release, `studio_scene_open` means **safe in-session scene import**
+via `bpy.data.libraries.load` followed by active scene pointer switch. It
+intentionally does **not** call `bpy.ops.wm.open_mainfile` in the running GUI,
+does **not** trigger its `load_post` handlers, and does **not** restore UI
+layouts, workspaces, add-on preferences, every external data link, or arbitrary
+non-scene Blender data. The acceptance test verifies the add-on socket stays
+usable, an old-scene MCP command is rejected, a new scene UUID/revision is
+returned, and subsequent inspection works without reconnecting stdio. A real
+application process restart requires a fresh authenticated MCP handshake and
+is **outside this release's active-session scope**. This scoped behavior is
+a documented exception to a full-project load-handler/reconnect interpretation,
+not a claim that the latter was tested.
+
+Automated Blender GUI testing under Xvfb is the **release acceptance mode**.
+Human mouse-driven GUI UAT is explicitly **not performed and not represented as
+completed**. The release is restricted to the CI-pinned environment above,
+not general desktop, Windows/macOS, multi-user projects, arbitrary scripts,
+untrusted file writers, or hard-crash atomic rollback. These environments and
+manual acceptance are deferred and must be required before expanding scope.
+
+### Material and camera golden-state acceptance
+
+The test session seeds a marker material on the startup mesh with diffuse RGBA
+`(0.125, 0.25, 0.5, 1)`, Principled shader base color matching the diffuse,
+metallic `0.22`, roughness `0.41`, and camera focal length `41.25mm`.
+After a snapshot, a direct Blender GUI-main-thread timer (not an MCP call)
+changes lens, material color, base color, metallic and roughness, while an MCP
+command creates a temporary object. Restoring the snapshot must remove that
+object and recover **all exact golden numeric values** (tolerance 1e-4).
+Independent headless Blender processes reopen both the snapshot and exported
+BLEND and repeat numeric comparisons. Saved evidence records expected, mutated,
+restored and post-open values, including revisions.
+
+Owner sign-off requires the **final HEAD** to pass Python 3.11/3.12, pinned
+Blender 4.5.15 GUI E2E, headless reopen and explicit documented scoped
+exemptions. No release merge may be inferred from a prior HEAD's CI.
