@@ -65,7 +65,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert {"studio_create_object", "studio_scene_inspect", "studio_set_transform", "studio_manage_collection"} <= set(handshake["operations"])
+            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot", "studio_scene_restore", "studio_scene_save"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
@@ -134,93 +134,237 @@ async def accept(port, record):
                 "elapsed_seconds": round(time.monotonic() - stress_started, 3),
                 "last_revision": rev + 51,
             }
-            # BAS-07: ten real typed operations through MCP → Blender GUI.
-            # Never delete project data: BAS-12 snapshot gate is not yet accepted.
-            rev07 = rev + 51
-            bas07_evidence = []
-            async def bas07(operation, key, **fields):
-                nonlocal rev07
-                req = {"operation": operation, "request_id": str(uuid4()),
-                       "effect_scope": "scene", "scene_id": sid,
-                       "scene_revision": rev07, "idempotency_key": key, **fields}
-                response = unpack(await client.call_tool(operation, {"request": req}))
-                assert response["status"] == "succeeded", (key, response)
-                assert response["scene_revision"] == rev07 + 1, (key, response)
-                rev07 += 1
-                bas07_evidence.append({"key": key, "operation": operation,
-                                       "revision": rev07, "result": response["result"]})
-                return response["result"]["objects"][0]["id"], req
-
-            title_id, _ = await bas07(
-                "studio_create_object", "bas07-text", name="BAS07_Title",
-                spec={"kind": "text", "text": "BAS-07 Unicode: Xin chào"},
-                location=[1.0, 0.0, 1.0])
-            renamed_id, _ = await bas07(
-                "studio_set_transform", "bas07-rename", action="rename",
-                object_id=title_id, name="BAS07_Renamed")
-            assert renamed_id == title_id
-            transformed_id, _ = await bas07(
-                "studio_set_transform", "bas07-transform", action="transform",
-                object_id=title_id, location=[2.0, 3.0, 1.0],
-                rotation_euler=[0.0, 0.0, 0.5], scale=[1.2, 1.2, 1.2])
-            assert transformed_id == title_id
-            copy_id, _ = await bas07(
-                "studio_set_transform", "bas07-copy", action="duplicate",
-                object_id=title_id, name="BAS07_Copy")
-            assert copy_id != title_id
-            col_id, _ = await bas07(
-                "studio_manage_collection", "bas07-col", action="create",
-                name="BAS07_Collection")
-            renamed_col_id, _ = await bas07(
-                "studio_manage_collection", "bas07-col-rename", action="rename",
-                collection_id=col_id, name="BAS07_Props")
-            assert renamed_col_id == col_id
-            moved_id, _ = await bas07(
-                "studio_manage_collection", "bas07-move", action="move_object",
-                collection_id=col_id, object_id=title_id)
-            assert moved_id == title_id
-            cube_id, cube_request = await bas07(
-                "studio_create_object", "bas07-cube", name="BAS07_Cube",
-                spec={"kind": "primitive", "primitive": "cube"},
-                location=[0.0, 2.0, 0.0])
-            await bas07(
-                "studio_set_transform", "bas07-scale", action="transform",
-                object_id=cube_id, scale=[2.0, 2.0, 2.0])
-            final_id, _ = await bas07(
-                "studio_set_transform", "bas07-cube-rename", action="rename",
-                object_id=cube_id, name="BAS07_Cube_Final")
-            assert final_id == cube_id
-            # Replaying the original request must not advance the revision.
-            replay = unpack(await client.call_tool("studio_create_object",
-                                                    {"request": cube_request}))
-            assert replay["status"] == "succeeded", replay
-            assert replay["scene_revision"] == cube_request["scene_revision"] + 1, replay
-            assert replay["result"]["objects"][0]["id"] == cube_id
-            missing = unpack(await client.call_tool("studio_set_transform", {"request": {
-                "operation": "studio_set_transform", "request_id": str(uuid4()),
-                "effect_scope": "scene", "scene_id": sid, "scene_revision": rev07,
-                "idempotency_key": "bas07-missing", "object_id": str(uuid4()),
-                "action": "rename", "name": "ShouldNotExist"}}))
-            assert missing["error"]["code"] == "object_not_found", missing
-            nan_input = unpack(await client.call_tool("studio_set_transform", {"request": {
-                "operation": "studio_set_transform", "request_id": str(uuid4()),
-                "effect_scope": "scene", "scene_id": sid, "scene_revision": rev07,
-                "idempotency_key": "bas07-bounds", "object_id": cube_id,
-                "action": "transform", "location": [100001.0, 0.0, 0.0]}}))
-            assert nan_input["error"]["code"] == "invalid_input", nan_input
-            final_scene = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+            # BAS-12: immutable sandboxed .blend copy created by real GUI bpy,
+            # verified and replayed without creating a second snapshot.
+            sandbox_request = {
+                "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid,
+                "scene_revision": rev + 51,
+                "idempotency_key": "bas12-gui-snapshot", "label": "golden-e2e",
+            }
+            snap = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": sandbox_request}))
+            assert snap["status"] == "succeeded", snap
+            snapshot_id = snap["result"]["snapshot_id"]
+            assert snap["scene_revision"] == rev + 51, snap
+            reissued = unpack(await client.call_tool(
+                "studio_scene_snapshot",
+                {"request": {**sandbox_request, "request_id": str(uuid4())}}))
+            assert reissued["status"] == "succeeded", reissued
+            assert reissued["result"]["snapshot_id"] == snapshot_id, reissued
+            manifest_path = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / ".bas12-snapshots" / snapshot_id / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            scene_copy = manifest_path.parent / "scene.blend"
+            assert manifest["scene_id"] == sid
+            assert manifest["scene_revision"] == rev + 51
+            assert manifest["sha256"] == hashlib.sha256(scene_copy.read_bytes()).hexdigest()
+            # Mutate then restore with a one-shot trusted acceptance token.
+            mutation = {
+                "operation": "studio_create_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": sid,
+                "scene_revision": rev + 51, "idempotency_key": "bas12-restore-probe",
+                "name": "BAS12_Throwaway",
+                "spec": {"kind": "primitive", "primitive": "cube"},
+            }
+            added = unpack(await client.call_tool("studio_create_object",
+                                                   {"request": mutation}))
+            assert added["status"] == "succeeded", added
+            from blender_mcp.security_policy import issue_confirmation
+            secret = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            confirm = issue_confirmation(
+                secret, operation="studio_scene_restore", scene_id=sid,
+                scene_revision=rev + 52, snapshot_id=snapshot_id)
+            restored = unpack(await client.call_tool("studio_scene_restore", {"request": {
+                "operation": "studio_scene_restore", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 52,
+                "idempotency_key": "bas12-restore-case", "snapshot_id": snapshot_id,
+                "confirmation_token": confirm}}))
+            assert restored["status"] == "succeeded", restored
+            assert restored["scene_revision"] == rev + 53, restored
+            restored_inspect = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 100}}))
+            assert restored_inspect["scene_revision"] == rev + 53
+            restored_objects = json.loads(restored_inspect["result"]["summary"])["objects"]
+            assert not any(item["name"] == "BAS12_Throwaway" for item in restored_objects)
+            assert any(item["object_id"] == oid for item in restored_objects)
+            assert restored["result"]["snapshot_id"] != snapshot_id  # pre-restore backup ID
+            # BAS-12 non-overwrite save is an atomic copy, not a hardlink
+            # to the immutable snapshot. Both file and snapshot survive.
+            destination = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / "bas12-export.blend"
+            saved_scene = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-export", "output_uri": destination.as_uri()}}))
+            assert saved_scene["status"] == "succeeded", saved_scene
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            assert saved_scene["scene_revision"] == rev + 53
+            record["bas12_save"] = {
+                "path": str(destination),
+                "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "snapshot_id": saved_scene["result"]["snapshot_id"],
+                "overwrite_disabled": True,
+            }
+            # Overwrite requires the pre-existing file SHA and a separate
+            # resource-bound trusted confirmation, never plain save permission.
+            from blender_mcp.security_policy import issue_resource_confirmation
+            old_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
+            overwrite_token = issue_resource_confirmation(
+                secret, operation="studio_scene_save", scene_id=sid,
+                scene_revision=rev + 53, resource=destination.as_uri() + "|" + old_hash)
+            replaced = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replaced["status"] == "succeeded", replaced
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            replay_overwrite = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replay_overwrite["status"] == "failed", replay_overwrite
+            record["bas12_overwrite"] = {
+                "approved_sha256": old_hash,
+                "new_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "backup_available": True, "replay_denied": True,
+            }
+            # Open is an in-process scene import, keeping the addon socket
+            # alive and returning a NEW scene UUID to force client resync.
+            original_snapshot = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": {
+                    "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                    "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                    "idempotency_key": "bas12-open-prior", "label": "pre-open"}}))
+            assert original_snapshot["status"] == "succeeded", original_snapshot
+            prior_id = original_snapshot["result"]["snapshot_id"]
+            file_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+            token_open = issue_resource_confirmation(
+                secret, operation="studio_scene_open", scene_id=sid,
+                scene_revision=rev + 53, snapshot_id=prior_id,
+                resource=destination.as_uri() + "|" + file_sha)
+            opened = unpack(await client.call_tool("studio_scene_open", {"request": {
+                "operation": "studio_scene_open", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-open-e2e", "input_uri": destination.as_uri(),
+                "expected_sha256": file_sha, "snapshot_id": prior_id,
+                "confirmation_token": token_open}}))
+            assert opened["status"] == "succeeded", opened
+            assert opened["scene_id"] != sid and opened["scene_revision"] == rev + 54
+            new_context = unpack(await client.call_tool("studio_scene_inspect", {"request": {
                 "operation": "studio_scene_inspect", "request_id": str(uuid4()),
                 "effect_scope": "read", "limit": 200}}))
-            assert final_scene["scene_revision"] == rev07, final_scene
-            objects07 = json.loads(final_scene["result"]["summary"])["objects"]
-            assert any(o["object_id"] == title_id and o["name"] == "BAS07_Renamed"
-                       and o["type"] == "FONT" for o in objects07)
-            assert any(o["object_id"] == copy_id for o in objects07)
-            assert any(o["object_id"] == cube_id and o["name"] == "BAS07_Cube_Final"
-                       for o in objects07)
-            record["bas07"] = {"operations": bas07_evidence, "passed": True,
-                               "delete_enabled": False, "last_revision": rev07}
+            assert new_context["status"] == "succeeded", new_context
+            assert new_context["scene_id"] == opened["scene_id"]
+            assert new_context["scene_revision"] == rev + 54
+            assert any(item["object_id"] == oid for item in
+                       json.loads(new_context["result"]["summary"])["objects"])
+            record["bas12_open"] = {
+                "old_scene_id": sid, "new_scene_id": opened["scene_id"],
+                "old_revision": rev + 53, "new_revision": rev + 54,
+                "socket_kept_alive": True, "checksum": file_sha,
+            }
+            # BAS-07: 10 real typed GUI creates/edits/collection actions,
+            # then snapshot-preview + resource-confirmed delete.
+            newid, basrev = opened["scene_id"], rev + 54
+            bas_actions = []
 
+            async def bas07(operation, key, **fields):
+                nonlocal basrev
+                raw = {"operation": operation, "request_id": str(uuid4()),
+                       "effect_scope": "scene", "scene_id": newid,
+                       "scene_revision": basrev, "idempotency_key": key, **fields}
+                resp = unpack(await client.call_tool(operation, {"request": raw}))
+                assert resp["status"] == "succeeded", (operation, key, resp)
+                assert resp["scene_revision"] == basrev + 1, resp
+                basrev += 1
+                bas_actions.append({"op": operation, "key": key, "revision": basrev})
+                return resp["result"]["objects"][0]["id"]
+
+            title_id = await bas07("studio_create_object", "bas07-title",
+                                   name="BAS07_Title",
+                                   spec={"kind": "text", "text": "Xin chào - BAS07"},
+                                   location=[1, 0, 1])
+            assert await bas07("studio_set_transform", "bas07-rename",
+                               object_id=title_id, action="rename",
+                               name="BAS07_Renamed") == title_id
+            assert await bas07("studio_set_transform", "bas07-transform",
+                               object_id=title_id, action="transform",
+                               location=[2, 2, 1], rotation_euler=[0, 0, 0.5],
+                               scale=[1.2, 1.2, 1.2]) == title_id
+            duplicate_id = await bas07("studio_set_transform", "bas07-duplicate",
+                                      object_id=title_id, action="duplicate",
+                                      name="BAS07_Copy")
+            assert duplicate_id != title_id
+            collection_id = await bas07("studio_manage_collection", "bas07-col",
+                                         action="create", name="BAS07_Collection")
+            assert await bas07("studio_manage_collection", "bas07-col-rename",
+                               action="rename", collection_id=collection_id,
+                               name="BAS07_Props") == collection_id
+            assert await bas07("studio_manage_collection", "bas07-col-move",
+                               action="move_object", object_id=title_id,
+                               collection_id=collection_id) == title_id
+            cube_id = await bas07("studio_create_object", "bas07-cube",
+                                  name="BAS07_Cube",
+                                  spec={"kind": "primitive", "primitive": "cube"})
+            assert await bas07("studio_set_transform", "bas07-cube-scale",
+                               object_id=cube_id, action="transform",
+                               scale=[2, 2, 2]) == cube_id
+            assert await bas07("studio_set_transform", "bas07-cube-rename",
+                               object_id=cube_id, action="rename",
+                               name="BAS07_FinalCube") == cube_id
+
+            preview = unpack(await client.call_tool("studio_scene_snapshot", {"request": {
+                "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": newid, "scene_revision": basrev,
+                "idempotency_key": "bas07-before-delete", "label": "delete-preview"}}))
+            assert preview["status"] == "succeeded", preview
+            preview_id = preview["result"]["snapshot_id"]
+            accepted_delete = issue_resource_confirmation(
+                secret, operation="studio_delete_object", scene_id=newid,
+                scene_revision=basrev, snapshot_id=preview_id,
+                resource=duplicate_id)
+            delete_request = {
+                "operation": "studio_delete_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid, "scene_revision": basrev,
+                "idempotency_key": "bas07-delete", "object_id": duplicate_id,
+                "snapshot_id": preview_id, "confirmation_token": accepted_delete}
+            deleted = unpack(await client.call_tool(
+                "studio_delete_object", {"request": delete_request}))
+            assert deleted["status"] == "succeeded", deleted
+            assert deleted["scene_revision"] == basrev + 1
+            assert duplicate_id in deleted["result"]["scene_diff"]["deleted"]
+            assert deleted["result"]["snapshot_id"] != preview_id
+            again = unpack(await client.call_tool("studio_delete_object", {"request": {
+                **delete_request, "request_id": str(uuid4())}}))
+            assert again["status"] == "failed"
+            basrev += 1
+            final = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 200}}))
+            assert final["status"] == "succeeded"
+            assert final["scene_revision"] == basrev
+            items = json.loads(final["result"]["summary"])["objects"]
+            assert not any(x["object_id"] == duplicate_id for x in items)
+            assert any(x["object_id"] == title_id and x["name"] == "BAS07_Renamed"
+                       and x["type"] == "FONT" for x in items)
+            record["bas07"] = {"operations": bas_actions, "delete_passed": True,
+                               "delete_replay_denied": True, "preview_id": preview_id,
+                               "pre_delete_backup": deleted["result"]["snapshot_id"],
+                               "deleted_object_id": duplicate_id,
+                               "final_revision": basrev}
+            record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
+                                       "after_revision": rev + 53,
+                                       "backup_id": restored["result"]["snapshot_id"]}
+            record["bas12_snapshot"] = {
+                "snapshot_id": snapshot_id, "sha256": manifest["sha256"],
+                "bytes": manifest["bytes"], "replay": True,
+                "path": str(scene_copy), "manifest": str(manifest_path),
+                "scene_revision": manifest["scene_revision"],
+            }
             record.update({"handshake": handshake, "scene_id": sid,
                            "initial_revision": rev, "new_revision": made["scene_revision"],
                            "object_id": oid, "object_name": "BAS05_Cube",
@@ -236,6 +380,11 @@ def main():
     args = ap.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    studio_root = output / "studio-sandbox"
+    studio_root.mkdir(mode=0o700, exist_ok=True)
+    studio_root.chmod(0o700)
+    os.environ["BLENDER_MCP_STUDIO_ROOT"] = str(studio_root)
+    os.environ["BLENDER_MCP_CONFIRM_SECRET"] = secrets.token_urlsafe(32)
     spec = json.loads((ROOT / "blender-runtime.json").read_text())
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     blender = ROOT / ".blender-runtime" / "runtime" / spec["artifacts"]["Linux-x86_64"]["executable"]
@@ -281,6 +430,33 @@ def main():
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat
+        # Reopen the saved snapshot in a separate headless Blender process so
+        # the interactive user scene cannot be destroyed by acceptance tests.
+        snapshot = Path(record["bas12_snapshot"]["path"])
+        reopen_script = ROOT / "scripts" / "bas12_snapshot_reopen.py"
+        reopened = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(snapshot), record["scene_id"], str(record["bas12_snapshot"]["scene_revision"])
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-reopen.log").write_text(reopened.stdout + reopened.stderr)
+        assert reopened.returncode == 0, reopened.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in reopened.stdout, reopened.stdout[-1000:]
+        # Also open the separately published output copy; this is the public
+        # studio_scene_save artifact, not an immutable internal snapshot path.
+        exported_scene = Path(record["bas12_save"]["path"])
+        export_checked = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(exported_scene), record["scene_id"],
+            str(record["bas12_restore"]["after_revision"]),
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-saved-export-reopen.log").write_text(
+            export_checked.stdout + export_checked.stderr)
+        assert export_checked.returncode == 0, export_checked.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in export_checked.stdout
+        record["bas12_save"]["reopen"] = "passed"
+        record["bas12_snapshot"]["reopen"] = "passed"
         record["bas06_heartbeat"] = heartbeat
         record["passed"] = True
         (output / "bas05-e2e.json").write_text(json.dumps(record, indent=2) + "\n")
