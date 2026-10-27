@@ -1,31 +1,29 @@
-# BAS-07 — Typed object CRUD (non-destructive phase)
+# BAS-07 — Typed object CRUD with BAS-12 protection
 
-As of 2026-10-27. Notion: https://app.notion.com/p/40515de298eb81cf9082c689a00c7aa7
-Draft PR #7. Dependency BAS-12 remains **Backlog**, so this implementation is **not accepted and not merge-ready**.
+Notion: https://app.notion.com/p/40515de298eb81cf9082c689a00c7aa7
+PR #7: https://github.com/nguyenvando420-spec/mcp-for-blender/pull/7
+BAS-12 prerequisite implementation: PR #8.
 
 ## Implemented
 
-- `studio_create_object` now dispatches both strict primitive and text variants. Text produces a native Blender FONT curve.
-- New `studio_set_transform` supports `transform`, `rename` and `duplicate`, resolved by `_bas05_object_id` instead of name.
-- New `studio_manage_collection` supports `create`, `rename` and `move_object`, using `_bas07_collection_id` metadata.
-- Strict finite and magnitude bounds on coordinates, rotations, scales; positive scales required. No generic Python, eval, or raw code routed through Studio.
-- Scene revision/idempotency record checked before mutation, with replay protection and conflicting-key rejection; collision-safe object lookup rejects UUID ambiguity.
-- Studio profile policy is enforced at MCP list/call and at authenticated Blender socket ingress; observer cannot mutate. Root and bundled add-on code are identical.
-- No `studio_delete_object` handler or advertised capability. Delete and overwrite are blocked pending BAS-12 trusted confirmations, persisted snapshots and restoration.
+- Primitive and Unicode FONT creation, transform, rename, duplicate and collection create/rename/move use typed v1 envelopes and stable UUIDs. Bound finite coordinate values are enforced at gateway and addon ingress.
+- Collection membership and transform changes attempt compensation if Blender raises. Uncertain partial effects are reported as conflicts.
+- `studio_delete_object` is available only with the BAS-12 sandbox and 32+ byte trusted confirmation secret. The caller must first inspect and create a current-revision `studio_scene_snapshot`, then obtain a trusted HMAC v2 confirmation bound to operation, scene UUID, scene revision, snapshot UUID and **object UUID** after preview. No token-issuing model-facing MCP tool exists.
+- Before delete, gateway confirms the target is in the preview manifest, creates and verifies another immutable pre-delete BLEND snapshot and consumes the one-use confirmation. Addon independently verifies token, current revision, both snapshot manifests and object UUID/name; linked/shared-scene objects are denied. Then it removes the object and increments revision. Duplicate requests are denied. Failed/uncertain delete responses report a recovery snapshot ID and partial-effects warning.
+- BAS-12 snapshot, restore, guarded open and confirmed atomic save code and regression tests are included in this branch. Root and bundled addons are kept identical.
 
-## Validation gates
+## Acceptance evidence
 
-CI runs Python 3.11.14 / 3.12.14 pytest + scoped ruff + compile; Blender 4.5.15 PR golden job runs GUI MCP E2E. `scripts/bas05_mcp_e2e.py` now issues ten additional typed BAS-07 operations and validates text, rename-preserved UUID, duplicate UUID, collection moves, scene revisions, idempotent replays, and negative inputs. CI results must be attached and independently reviewed before acceptance. Save-to-BLEND comes from the existing disposable GUI test workspace.
+The CI pipeline runs Python 3.11.14 / 3.12.14 unit and security tests, build and lint; Blender 4.5.15 Xvfb runs real MCP client/GUI 100 BAS-06 commands, BAS-12 snapshot→mutation→restore→save→overwrite→in-session open and BAS-07 ten typed create/edit/collection operations followed by confirmed snapshot-backed delete and replay rejection. It records BLEND/PNG, manifests, SHA256, environment and logs. Results must be inspected on the final HEAD; a previous green run does not validate new commits.
 
-## Known limitations / follow-ups
+## Operational/security boundaries
 
-- **BAS-12 gate:** No destructive delete, overwrite, snapshot/restore integration, rollback on partial mutation, or fresh-scene restore acceptance is claimed. CRUD is incomplete.
-- Provisional BAS-05 scene revision does not include arbitrary human GUI edits until BAS-08. Do not use it to authorize destructive operations.
-- The in-scene 128-record idempotency cache is bounded and not the durable transaction journal planned for BAS-12/BAS-22.
-- Blender collection move links new destination before unlinking old sources but does not provide atomic undo on unforeseen bpy exceptions. Manual repair might be needed.
-- User-edited imported objects without an assigned Studio UUID do not become mutable by ID automatically.
-- CI GUI Xvfb is not an independent human desktop UAT nor a multi-OS/GPU validation.
+- Trusted UI/backend must issue tokens only after displaying exactly which object/file and scene revision will be affected. Tokens are verified at both gateway and Blender add-on.
+- Scene revision is provisional for unrelated manual human GUI edits until BAS-08; the delete path checks preview name/UUID but not every possible mesh/material mutation since preview. Projects requiring strong external edit consistency must defer delete.
+- File operations assume a private, single-writer Linux/POSIX sandbox; symlink, path traversal and checksum negatives are tested. Full cross-process transactional isolation is not claimed.
+- If Blender crashes or a socket times out after a side effect, the gateway reports that status may be unknown plus a pre-delete backup. Human-assisted snapshot restore may be required; automatic rollback is not guaranteed.
+- Test coverage does not imply independent human desktop UAT or macOS/Windows/GPU support.
 
-## Requirements for Done
+## Merge gate
 
-Finish BAS-12 and integrate confirm-preview-snapshot-delete-restore; prove snapshot before side effect and rollback/partial-effect reporting; attach reproducible scene diff, saved BLEND, manifest/hash, logs and environment; review green CI and real GUI test; only then merge reviewed HEAD to main and mark Done in Notion.
+Review security/fault-injection findings, validate final HEAD on Python 3.11/3.12 and Blender GUI, inspect test artifact evidence, verify PR #8 dependency and merge order, and only then consider marking Done and merging to main.
