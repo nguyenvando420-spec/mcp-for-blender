@@ -7,7 +7,7 @@ import asyncio
 from blender_mcp import blender_scripts, guides, server
 from blender_mcp.openai_apps import is_app_only
 
-STUDIO_TOOLS = {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_scene_snapshot", "studio_scene_restore", "studio_scene_save"}
+STUDIO_TOOLS = {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_scene_snapshot", "studio_scene_restore", "studio_scene_save", "studio_scene_open"}
 
 MODEL_TOOLS = {
     "get_addon_status", "disable_telemetry", "get_scene_info", "execute_blender_code",
