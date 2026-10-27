@@ -282,7 +282,14 @@ class StudioContractTests(unittest.TestCase):
         for name, schema in json_schemas().items():
             with self.subTest(schema=name):
                 Draft202012Validator.check_schema(schema)
-                self.assertEqual(json.loads((root / f"studio-{name}-v1.schema.json").read_text()), schema)
+                saved = json.loads((root / f"studio-{name}-v1.schema.json").read_text())
+                if saved != schema:
+                    import difflib
+                    print("\\n".join(list(difflib.unified_diff(
+                        json.dumps(saved, indent=2, sort_keys=True).splitlines(),
+                        json.dumps(schema, indent=2, sort_keys=True).splitlines(),
+                        fromfile="checked-in", tofile="generated"))[:90]))
+                self.assertEqual(saved, schema)
         self.assertEqual(set(json_schemas()["request"]["discriminator"]["mapping"]), STUDIO_OPERATIONS)
 
 
