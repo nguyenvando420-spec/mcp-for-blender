@@ -1491,7 +1491,7 @@ class BlenderMCPServer:
             return True, ""
         if self.profile == "studio-local" and (cmd_type == "studio_create_object_v1" or
                 (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")) or
-                (cmd_type == "studio_scene_restore_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")
+                (cmd_type in ("studio_scene_restore_v1", "studio_scene_open_v1") and os.getenv("BLENDER_MCP_STUDIO_ROOT")
                  and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32)):
             return True, ""
         return False, "permission_denied"
@@ -1706,6 +1706,7 @@ class BlenderMCPServer:
             "studio_create_object_v1": self.studio_create_object_v1,
             "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
             "studio_scene_restore_v1": self.studio_scene_restore_v1,
+            "studio_scene_open_v1": self.studio_scene_open_v1,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1817,6 +1818,7 @@ class BlenderMCPServer:
                 "studio_create_object_v1",
                 "studio_scene_snapshot_v1",
                 "studio_scene_restore_v1",
+                "studio_scene_open_v1",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -2062,6 +2064,130 @@ class BlenderMCPServer:
                 os.close(fd)
         except FileExistsError:
             raise ValueError("permission_denied: already consumed confirmation")
+
+    def _bas12_validate_resource(self, token, operation, scene_id, revision,
+                                 snapshot_id, resource):
+        """Independent add-on check of resource-bound v2 confirmation."""
+        import struct
+        import binascii
+        secret = os.getenv("BLENDER_MCP_CONFIRM_SECRET", "").encode()
+        struct_v2 = struct.Struct("!B16sQ16sQ16s32s")
+        codes = {"studio_scene_open": 1, "studio_scene_save": 4,
+                 "studio_delete_object": 3}
+        if len(secret) < 32 or not isinstance(token, str) or len(token) > 256:
+            raise ValueError("permission_denied: confirmation verifier unavailable")
+        try:
+            raw = base64.b64decode(token + "=" * (-len(token) % 4),
+                                   altchars=b"-_", validate=True)
+            if len(raw) != struct_v2.size + 32:
+                raise ValueError("Invalid token")
+            payload, mac = raw[:-32], raw[-32:]
+            if not hmac.compare_digest(
+                    hmac.new(secret, b"BAS12-RESOURCE-V2" + payload,
+                             hashlib.sha256).digest(), mac):
+                raise ValueError("Invalid signature")
+            code, sid, rev, bound_snapshot, expiry, nonce, digest = struct_v2.unpack(payload)
+            now = int(time.time())
+            bound = uuid.UUID(snapshot_id).bytes if snapshot_id else bytes(16)
+            if (code != codes[operation] or sid != uuid.UUID(scene_id).bytes
+                    or rev != revision or bound_snapshot != bound
+                    or not now < expiry <= now + 300 or not any(nonce)
+                    or not hmac.compare_digest(digest, hashlib.sha256(
+                        resource.encode("utf-8")).digest())):
+                raise ValueError("Invalid authorization context")
+            return nonce.hex()
+        except (ValueError, TypeError, binascii.Error, struct.error):
+            raise ValueError("permission_denied: file/object confirmation invalid")
+
+    def _bas12_validate_external(self, path, sha256):
+        """Independent defense at the socket boundary, not a raw bpy path."""
+        from pathlib import Path
+        from urllib.parse import quote
+        try:
+            root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+            target = Path(path)
+            if (not root.is_absolute() or root.is_symlink()
+                    or root.resolve(strict=True) != root or root.stat().st_mode & 0o022
+                    or not target.is_absolute() or ".." in target.parts
+                    or not target.relative_to(root).parts):
+                raise ValueError("Unsafe root/path")
+            cursor = root
+            for segment in target.relative_to(root).parts[:-1]:
+                cursor = cursor / segment
+                if cursor.is_symlink() or not cursor.is_dir() or cursor.stat().st_mode & 0o077:
+                    raise ValueError("Unsafe path component")
+            if target.is_symlink() or not target.is_file():
+                raise ValueError("Missing input")
+            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                state = os.fstat(fd)
+                if state.st_size < 16 or state.st_size > 2 << 30:
+                    raise ValueError("Input size outside bounds")
+                if os.read(fd, 7) != b"BLENDER":
+                    raise ValueError("Invalid file format")
+                os.lseek(fd, 0, os.SEEK_SET)
+                digest = hashlib.sha256()
+                while True:
+                    block = os.read(fd, 1048576)
+                    if not block:
+                        break
+                    digest.update(block)
+                if digest.hexdigest() != sha256:
+                    raise ValueError("File was replaced")
+            finally:
+                os.close(fd)
+            return target
+        except (ValueError, OSError, KeyError, TypeError):
+            raise ValueError("permission_denied: unsafe input file")
+
+    def studio_scene_open_v1(self, scene_id, scene_revision, path, sha256,
+                             snapshot_id, confirmation_token, backup_snapshot_id):
+        """Load an external allowed .blend into the current GUI session.
+
+        Library import (not bpy.ops.wm.open_mainfile) retains the active addon
+        socket and timer handlers, while the scene-id changes to invalidate
+        outstanding tool requests on the previous scene.
+        """
+        original, sid, revision = self._studio_scene_context_v1()
+        if sid != scene_id or type(scene_revision) is not int or scene_revision != revision:
+            raise ValueError("stale_scene: scene context changed")
+        input_path = self._bas12_validate_external(path, sha256)
+        from pathlib import Path
+        resource = Path(input_path).as_uri() + "|" + sha256
+        self._bas12_validate_resource(confirmation_token, "studio_scene_open",
+                                      sid, revision, snapshot_id, resource)
+        root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+        backup_path = root / ".bas12-snapshots" / str(uuid.UUID(backup_snapshot_id)) / "scene.blend"
+        manifest = json.loads((backup_path.parent / "manifest.json").read_text())
+        self._bas12_read_snapshot(backup_snapshot_id, str(backup_path), manifest["sha256"])
+        if manifest["scene_id"] != sid or manifest["scene_revision"] != revision:
+            raise ValueError("conflict: pre-open snapshot not current")
+        if bpy.context.window is None:
+            raise ValueError("conflict: no GUI window for scene switch")
+        previous = bpy.context.window.scene
+        # Retain original objects for rollback; library import may suffix their
+        # names. Expose the new scene id/revision to clients on success.
+        with bpy.data.libraries.load(str(input_path), link=False) as (available, imported):
+            imported.scenes = list(available.scenes[:1])
+        target = next((s for s in imported.scenes if s is not None), None)
+        if target is None:
+            raise ValueError("conflict: source file contains no scene")
+        new_scene_id = str(uuid.uuid4())
+        try:
+            target["_bas05_scene_id"] = new_scene_id
+            target["_bas05_scene_revision"] = revision + 1
+            target["_bas05_idempotency_cache"] = "{}"
+            target["_bas12_previous_scene_id"] = sid
+            bpy.context.window.scene = target
+        except Exception:
+            try:
+                bpy.context.window.scene = previous
+            except Exception:
+                pass
+            raise ValueError("conflict: scene open uncertain; previous scene retained")
+        return {"scene_id": new_scene_id, "old_scene_id": sid,
+                "scene_revision": revision + 1,
+                "pre_open_snapshot_id": backup_snapshot_id}
 
     def studio_scene_restore_v1(self, scene_id, scene_revision, snapshot_id,
                                 path, sha256, confirmation_token,
