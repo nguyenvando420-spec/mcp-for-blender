@@ -126,6 +126,26 @@ async def accept(port, record):
                 "sha256": result_capture["sha256"], "width": result_capture["width"],
                 "height": result_capture["height"], "revision_preserved": True,
                 "selection_preserved": True, "frame_preserved": True}
+            # Camera mode must also use offscreen projection without switching
+            # scene.camera, user selection or the viewport shading.
+            assert before_capture["camera"], "BAS08 test scene needs an active camera"
+            camera_capture = unpack(await client.call_tool("studio_capture_viewport", {"request": {
+                "operation": "studio_capture_viewport", "request_id": str(uuid4()),
+                "effect_scope": "read", "scene_id": sid, "scene_revision": rev,
+                "max_size": 320, "mode": "camera"}}))
+            assert camera_capture["status"] == "succeeded", camera_capture.get("error")
+            camera_image = camera_capture["result"]["capture"]
+            camera_png = base64.b64decode(camera_image["image_base64"], validate=True)
+            assert camera_png[:8] == bytes.fromhex("89504e470d0a1a0a")
+            assert hashlib.sha256(camera_png).hexdigest() == camera_image["sha256"]
+            (Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent / "bas08-camera.png").write_bytes(camera_png)
+            post_camera = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                **inspect, "request_id": str(uuid4())}}))
+            post_camera_summary = json.loads(post_camera["result"]["summary"])
+            for key in ("scene_fingerprint", "selected", "frame", "camera"):
+                assert post_camera_summary[key] == before_capture[key], key
+            assert post_camera["scene_revision"] == rev
+            record["bas08_capture"]["camera_sha256"] = camera_image["sha256"]
             create = {
                 "operation": "studio_create_object", "request_id": str(uuid4()),
                 "effect_scope": "scene", "scene_id": sid, "scene_revision": rev,
