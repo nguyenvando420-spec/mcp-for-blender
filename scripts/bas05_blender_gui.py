@@ -187,7 +187,17 @@ def _bas08_negative_probe():
         request = json.loads(request_path.read_text())
         request_path.unlink()
         action = request["action"]
-        if action == "empty":
+        if action == "create_untracked":
+            # Deliberately bypass all Studio handlers, as a GUI user can.
+            if bpy.context.scene.objects.get("BAS08_ManualObject") is not None:
+                raise RuntimeError("BAS-08 untracked test object already present")
+            mesh = bpy.data.meshes.new("BAS08_UntrackedMesh")
+            obj = bpy.data.objects.new("BAS08_ManualObject", mesh)
+            bpy.context.scene.collection.objects.link(obj)
+            mat = bpy.data.materials.new("BAS08_UntrackedMaterial")
+            mesh.materials.append(mat)
+            bpy.context.view_layer.update()
+        elif action == "empty":
             if _bas08_restore_scene is not None:
                 raise RuntimeError("Empty scene already active")
             _bas08_restore_scene = bpy.context.window.scene
