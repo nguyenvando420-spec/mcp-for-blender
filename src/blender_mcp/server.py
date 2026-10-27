@@ -2387,6 +2387,23 @@ def studio_scene_save(request: dict) -> dict:
     """Publish a fresh BLEND copy into the authorized root without overwrite."""
     return _studio_gateway().invoke(request, "studio_scene_save")
 
+@mcp.tool()
+def studio_set_transform(request: dict) -> dict:
+    """Typed transform/rename/duplicate by stable object UUID."""
+    return _studio_gateway().invoke(request, "studio_set_transform")
+
+
+@mcp.tool()
+def studio_manage_collection(request: dict) -> dict:
+    """Create, rename and move objects between Blender collections."""
+    return _studio_gateway().invoke(request, "studio_manage_collection")
+
+
+@mcp.tool()
+def studio_delete_object(request: dict) -> dict:
+    """Delete only with bound confirmation and verified pre-delete snapshots."""
+    return _studio_gateway().invoke(request, "studio_delete_object")
+
 
 # Main execution
 

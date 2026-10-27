@@ -1489,7 +1489,10 @@ class BlenderMCPServer:
             return True, ""
         if cmd_type in self.READ_COMMANDS:
             return True, ""
-        if self.profile == "studio-local" and (cmd_type == "studio_create_object_v1" or
+        if self.profile == "studio-local" and (cmd_type in ("studio_create_object_v1", "studio_create_text_v1",
+                "studio_set_transform_v1", "studio_manage_collection_v1") or
+                (cmd_type == "studio_delete_object_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")
+                 and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32) or
                 (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")) or
                 (cmd_type in ("studio_scene_restore_v1", "studio_scene_open_v1") and os.getenv("BLENDER_MCP_STUDIO_ROOT")
                  and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32)):
@@ -1704,6 +1707,10 @@ class BlenderMCPServer:
             "get_scene_info": self.get_scene_info,
             "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
             "studio_create_object_v1": self.studio_create_object_v1,
+            "studio_create_text_v1": self.studio_create_text_v1,
+            "studio_set_transform_v1": self.studio_set_transform_v1,
+            "studio_manage_collection_v1": self.studio_manage_collection_v1,
+            "studio_delete_object_v1": self.studio_delete_object_v1,
             "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
             "studio_scene_restore_v1": self.studio_scene_restore_v1,
             "studio_scene_open_v1": self.studio_scene_open_v1,
@@ -1816,6 +1823,10 @@ class BlenderMCPServer:
                 "get_scene_info",
                 "studio_scene_inspect_v1",
                 "studio_create_object_v1",
+                "studio_create_text_v1",
+                "studio_set_transform_v1",
+                "studio_manage_collection_v1",
+                "studio_delete_object_v1",
                 "studio_scene_snapshot_v1",
                 "studio_scene_restore_v1",
                 "studio_scene_open_v1",
@@ -1874,7 +1885,7 @@ class BlenderMCPServer:
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
             raise ValueError("invalid_input: invalid idempotency key")
         if (not isinstance(location, (list, tuple)) or len(location) != 3
-                or any(type(v) not in (int, float) or not math.isfinite(v) for v in location)):
+                or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 100000.0 for v in location)):
             raise ValueError("invalid_input: invalid location")
         scene, current_id, revision = self._studio_scene_context_v1()
         payload = json.dumps([scene_id, scene_revision, name, primitive, location],
@@ -1940,6 +1951,75 @@ class BlenderMCPServer:
         except (KeyError, ValueError, OSError, TypeError):
             raise ValueError("permission_denied: BAS-12 sandbox path denied")
 
+    @staticmethod
+    def _bas07_scene_fingerprint(scene):
+        """Bounded deterministic GUI-state digest, independent of MCP revision.
+
+        Includes untracked GUI objects, location/rotation/scale, mesh vertex
+        coordinates, camera lens, collection memberships and material surface
+        colors. This is a conservative conflict detector, NOT a universal
+        canonical serializer for every Blender datablock/driver/modifier.
+        """
+        digest = hashlib.sha256()
+        objects = sorted(scene.objects, key=lambda obj: obj.name_full)
+        if len(objects) > 2500:
+            raise ValueError("conflict: scene too large for safe delete preview")
+        total_vertices = 0
+
+        def add(value):
+            digest.update(json.dumps(value, sort_keys=True,
+                                     ensure_ascii=False, allow_nan=False,
+                                     separators=(",", ":")).encode("utf-8"))
+            digest.update(b"\n")
+
+        def vec(values):
+            return [float(v).hex() for v in values]
+
+        add(["scene", scene.name_full, scene.camera.name_full if scene.camera else None,
+             scene.world.name_full if scene.world else None])
+        for obj in objects:
+            add(["object", obj.name_full, obj.type, obj.get("_bas05_object_id"),
+                 vec(obj.location), vec(obj.rotation_euler), vec(obj.scale),
+                 obj.parent.name_full if obj.parent else None,
+                 sorted(col.name_full for col in obj.users_collection)])
+            data = obj.data
+            if obj.type == "MESH" and data is not None:
+                total_vertices += len(data.vertices)
+                if total_vertices > 100000:
+                    raise ValueError("conflict: scene geometry exceeds safe preview limit")
+                add(["mesh", data.name_full, len(data.vertices), len(data.polygons)])
+                for vertex in data.vertices:
+                    add(["v", vec(vertex.co)])
+            if obj.type == "CAMERA" and data is not None:
+                add(["camera", data.name_full, float(data.lens).hex()])
+            if obj.type == "FONT" and data is not None:
+                add(["font", data.body])
+            if data is not None and hasattr(data, "materials"):
+                for index, material in enumerate(data.materials):
+                    if material is None:
+                        add(["material", index, None])
+                        continue
+                    add(["material", index, material.name_full,
+                         vec(material.diffuse_color),
+                         bool(material.use_nodes)])
+                    if material.use_nodes and material.node_tree:
+                        nodes = sorted(material.node_tree.nodes, key=lambda node: node.name)
+                        if len(nodes) > 300:
+                            raise ValueError("conflict: too many material nodes")
+                        for node in nodes:
+                            if node.type == "BSDF_PRINCIPLED":
+                                inputs = []
+                                for key in ("Base Color", "Metallic", "Roughness"):
+                                    socket = node.inputs.get(key)
+                                    if socket is not None:
+                                        value = socket.default_value
+                                        try:
+                                            inputs.append([key, vec(value)])
+                                        except TypeError:
+                                            inputs.append([key, float(value).hex()])
+                                add(["shader", node.name, inputs])
+        return digest.hexdigest()
+
     def studio_scene_snapshot_v1(self, scene_id, scene_revision, snapshot_id, path):
         """Main-thread Blender BLEND copy; DOES NOT overwrite the active file."""
         scene, current_id, revision = self._studio_scene_context_v1()
@@ -1968,6 +2048,7 @@ class BlenderMCPServer:
         return {"scene_id": current_id, "scene_revision": revision,
                 "snapshot_id": str(uuid.UUID(snapshot_id)),
                 "sha256": sha.hexdigest(), "bytes": count,
+                "scene_fingerprint": self._bas07_scene_fingerprint(scene),
                 "objects": [{"object_id": str(obj.get("_bas05_object_id")),
                              "name": obj.name}
                             for obj in scene.objects
@@ -2258,6 +2339,273 @@ class BlenderMCPServer:
             raise ValueError("conflict: restore failed, original retained where possible")
         return {"scene_id": current_id, "scene_revision": revision + 1,
                 "restored_snapshot_id": snapshot_id, "pre_restore_snapshot_id": backup_snapshot_id}
+
+    # BAS-07: all helpers execute on the GUI main-thread queue, never socket IO.
+    @staticmethod
+    def _bas07_vec(values, label, limit):
+        if values is None:
+            return None
+        if not isinstance(values, (list, tuple)) or len(values) != 3:
+            raise ValueError("invalid_input: " + label)
+        if any(type(v) not in (float, int) or not math.isfinite(v)
+               or abs(v) > limit for v in values):
+            raise ValueError("invalid_input: " + label)
+        if label == "scale" and any(v <= 0 for v in values):
+            raise ValueError("invalid_input: scale")
+        return tuple(float(v) for v in values)
+
+    @staticmethod
+    def _bas07_uuid(value):
+        try:
+            return str(uuid.UUID(value))
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid_input: malformed UUID")
+
+    @staticmethod
+    def _bas07_name(value):
+        if not isinstance(value, str) or not 1 <= len(value) <= 256:
+            raise ValueError("invalid_input: name")
+        return value
+
+    def _bas07_find(self, scene, obj_id, collections=False):
+        key = "_bas07_collection_id" if collections else "_bas05_object_id"
+        target = self._bas07_uuid(obj_id)
+        items = (bpy.data.collections if collections else scene.objects)
+        matches = [item for item in items if item.get(key) == target]
+        if collections:
+            # Do not edit orphan or unrelated scene collection datablocks.
+            scene_membership = set(scene.collection.children_recursive)
+            matches = [item for item in matches if item in scene_membership]
+        if len(matches) != 1:
+            # Ambiguity is a conflict, never silently edit the first match.
+            raise ValueError("conflict: duplicate UUID" if matches else
+                             "object_not_found: UUID is absent")
+        return matches[0]
+
+    def _bas07_execute(self, operation, scene_id, scene_revision,
+                       idempotency_key, payload, callback):
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise ValueError("invalid_input: idempotency key")
+        scene, sid, rev = self._studio_scene_context_v1()
+        normalized = json.dumps([operation, scene_id, scene_revision, payload],
+                                sort_keys=True, separators=(",", ":"), allow_nan=False)
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        cache = json.loads(scene.get("_bas05_idempotency_cache", "{}"))
+        if idempotency_key in cache:
+            item = cache[idempotency_key]
+            if item["digest"] != digest:
+                raise ValueError("conflict: idempotency key reused")
+            return dict(item["reply"], replayed=True)
+        if scene_id != sid or type(scene_revision) is not int or rev != scene_revision:
+            raise ValueError("stale_scene: revision mismatch")
+        # Validate all inputs/targets before callback mutates bpy.
+        obj_id, name = callback(scene)
+        reply = {"scene_id": sid, "scene_revision": rev + 1,
+                 "object_id": obj_id, "name": name}
+        cache[idempotency_key] = {"digest": digest, "reply": reply}
+        if len(cache) > 128:
+            cache.pop(next(iter(cache)))
+        scene["_bas05_scene_revision"] = rev + 1
+        scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        return reply
+
+    def studio_create_text_v1(self, scene_id, scene_revision, idempotency_key,
+                              name, text, location):
+        name = self._bas07_name(name)
+        if not isinstance(text, str) or not 1 <= len(text) <= 4096:
+            raise ValueError("invalid_input: text")
+        loc = self._bas07_vec(location, "location", 100000.0)
+        if loc is None:
+            raise ValueError("invalid_input: location")
+        def apply(scene):
+            curve = bpy.data.curves.new(name=name + "_Font", type="FONT")
+            try:
+                curve.body = text
+                obj = bpy.data.objects.new(name, curve)
+                scene.collection.objects.link(obj)
+            except Exception:
+                if curve.users == 0:
+                    bpy.data.curves.remove(curve)
+                raise
+            oid = str(uuid.uuid4())
+            obj["_bas05_object_id"] = oid
+            obj.location = loc
+            return oid, obj.name
+        return self._bas07_execute("create_text", scene_id, scene_revision,
+                                   idempotency_key, [name, text, loc], apply)
+
+    def studio_set_transform_v1(self, scene_id, scene_revision, idempotency_key,
+                                object_id, action, name=None, location=None,
+                                rotation_euler=None, scale=None):
+        target = self._bas07_uuid(object_id)
+        loc = self._bas07_vec(location, "location", 100000.0)
+        rot = self._bas07_vec(rotation_euler, "rotation_euler", 1000.0)
+        scl = self._bas07_vec(scale, "scale", 1000.0)
+        if action == "transform":
+            if all(v is None for v in (loc, rot, scl)) or name is not None:
+                raise ValueError("invalid_input: transform")
+        elif action in ("rename", "duplicate"):
+            name = self._bas07_name(name)
+            if any(v is not None for v in (loc, rot, scl)):
+                raise ValueError("invalid_input: name action")
+        else:
+            raise ValueError("invalid_input: unknown transform action")
+        def apply(scene):
+            obj = self._bas07_find(scene, target)
+            if action == "duplicate":
+                copy = obj.copy()
+                if obj.data:
+                    copy.data = obj.data.copy()
+                # Object-copy transfers custom UUID; overwrite before linking.
+                oid = str(uuid.uuid4())
+                copy["_bas05_object_id"] = oid
+                copy.name = name
+                try:
+                    scene.collection.objects.link(copy)
+                except Exception:
+                    bpy.data.objects.remove(copy, do_unlink=True)
+                    raise
+                return oid, copy.name
+            if action == "rename":
+                before = obj.name
+                try:
+                    obj.name = name
+                except Exception:
+                    obj.name = before
+                    raise
+            else:
+                before = (obj.location.copy(), obj.rotation_euler.copy(),
+                          obj.scale.copy())
+                try:
+                    if loc is not None:
+                        obj.location = loc
+                    if rot is not None:
+                        obj.rotation_euler = rot
+                    if scl is not None:
+                        obj.scale = scl
+                except Exception:
+                    try:
+                        obj.location, obj.rotation_euler, obj.scale = before
+                    except Exception:
+                        raise ValueError("conflict: partial_transform_unknown")
+                    raise
+            return target, obj.name
+        return self._bas07_execute("set_transform", scene_id, scene_revision,
+                                   idempotency_key,
+                                   [target, action, name, loc, rot, scl], apply)
+
+    def studio_manage_collection_v1(self, scene_id, scene_revision,
+                                    idempotency_key, action, name=None,
+                                    collection_id=None, object_id=None):
+        if action == "create":
+            name = self._bas07_name(name)
+            if collection_id is not None or object_id is not None:
+                raise ValueError("invalid_input: collection create")
+        elif action == "rename":
+            name = self._bas07_name(name)
+            collection_id = self._bas07_uuid(collection_id)
+            if object_id is not None:
+                raise ValueError("invalid_input: collection rename")
+        elif action == "move_object":
+            collection_id = self._bas07_uuid(collection_id)
+            object_id = self._bas07_uuid(object_id)
+            if name is not None:
+                raise ValueError("invalid_input: collection move")
+        else:
+            raise ValueError("invalid_input: collection action")
+        def apply(scene):
+            if action == "create":
+                col = bpy.data.collections.new(name)
+                cid = str(uuid.uuid4())
+                col["_bas07_collection_id"] = cid
+                try:
+                    scene.collection.children.link(col)
+                except Exception:
+                    bpy.data.collections.remove(col)
+                    raise
+                return cid, col.name
+            col = self._bas07_find(scene, collection_id, collections=True)
+            if action == "rename":
+                col.name = name
+                return collection_id, col.name
+            obj = self._bas07_find(scene, object_id)
+            # Compensating transaction: undo all membership changes if a
+            # Blender link/unlink raises, preserving the original collections.
+            originals = list(obj.users_collection)
+            try:
+                if col not in originals:
+                    col.objects.link(obj)
+                for old in originals:
+                    if old != col:
+                        old.objects.unlink(obj)
+            except Exception:
+                try:
+                    for old in originals:
+                        if old not in obj.users_collection:
+                            old.objects.link(obj)
+                    for unwanted in list(obj.users_collection):
+                        if unwanted not in originals:
+                            unwanted.objects.unlink(obj)
+                except Exception:
+                    raise ValueError("conflict: partial_collection_change_unknown")
+                raise
+            return object_id, obj.name
+        return self._bas07_execute("manage_collection", scene_id, scene_revision,
+                                   idempotency_key,
+                                   [action, name, collection_id, object_id], apply)
+
+    def studio_delete_object_v1(self, scene_id, scene_revision, object_id,
+                                snapshot_id, backup_snapshot_id, confirmation_token):
+        """Confirmed deletion after two verified, same-revision snapshots."""
+        scene, current_id, rev = self._studio_scene_context_v1()
+        if current_id != scene_id or type(scene_revision) is not int or rev != scene_revision:
+            raise ValueError("stale_scene: revision mismatch")
+        object_id = self._bas07_uuid(object_id)
+        snapshot_id = self._bas07_uuid(snapshot_id)
+        backup_snapshot_id = self._bas07_uuid(backup_snapshot_id)
+        self._bas12_validate_resource(
+            confirmation_token, "studio_delete_object", current_id,
+            rev, snapshot_id, object_id)
+        from pathlib import Path
+        root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+        details = []
+        for ident in (snapshot_id, backup_snapshot_id):
+            folder = root / ".bas12-snapshots" / ident
+            path = folder / "scene.blend"
+            if (folder.is_symlink() or not folder.is_dir()
+                    or (folder.stat().st_mode & 0o077)
+                    or (folder / "manifest.json").is_symlink()):
+                raise ValueError("conflict: unsafe snapshot")
+            with (folder / "manifest.json").open("r", encoding="utf-8") as stream:
+                manifest = json.load(stream)
+            self._bas12_read_snapshot(ident, str(path), manifest["sha256"])
+            if manifest["scene_id"] != current_id or manifest["scene_revision"] != rev:
+                raise ValueError("conflict: snapshot does not match live context")
+            details.append(manifest)
+        obj = self._bas07_find(scene, object_id)
+        if obj.library is not None:
+            raise ValueError("permission_denied: linked library object")
+        # Never delete shared objects used by other scenes.
+        if any(s != scene for s in getattr(obj, "users_scene", [])):
+            raise ValueError("permission_denied: object shared by other scenes")
+        # Direct Blender GUI edits do not advance BAS-05 revision. Compare
+        # approved preview, fresh pre-delete backup and current live scene
+        # against a deterministic content digest; no side effect on mismatch.
+        live_fingerprint = self._bas07_scene_fingerprint(scene)
+        for manifest in details:
+            if (not isinstance(manifest.get("scene_fingerprint"), str)
+                    or not hmac.compare_digest(manifest["scene_fingerprint"],
+                                               live_fingerprint)):
+                raise ValueError("conflict: GUI scene changed since preview")
+            preview = [entry for entry in manifest.get("scene_inventory", [])
+                       if entry.get("object_id") == object_id]
+            if len(preview) != 1 or preview[0]["name"] != obj.name:
+                raise ValueError("conflict: object changed since preview")
+        # A failure after this point is reported as uncertain, never replayed.
+        bpy.data.objects.remove(obj, do_unlink=True)
+        scene["_bas05_scene_revision"] = rev + 1
+        return {"scene_id": current_id, "scene_revision": rev + 1,
+                "object_id": object_id, "backup_snapshot_id": backup_snapshot_id}
 
     def get_scene_info(self):
         """Get information about the current Blender scene"""

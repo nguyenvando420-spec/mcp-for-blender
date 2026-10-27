@@ -134,8 +134,8 @@ def test_text_is_not_implicitly_advertised_as_supported_variant():
 
 @pytest.mark.parametrize("profile,expected", [
     (Profile.OBSERVER, {"studio_handshake", "studio_scene_inspect"}),
-    (Profile.STUDIO_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object"}),
-    (Profile.DEVELOPER_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object"}),
+    (Profile.STUDIO_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_set_transform", "studio_manage_collection"}),
+    (Profile.DEVELOPER_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_set_transform", "studio_manage_collection"}),
     (Profile.REMOTE, set()), (Profile.WORKER, set()),
 ])
 def test_exposure(profile, expected):
@@ -181,3 +181,119 @@ def test_hidden_legacy_raw_code_cannot_be_called_in_studio_profile(monkeypatch):
     monkeypatch.setenv("BLENDER_MCP_PROFILE", "studio-local")
     with pytest.raises(PermissionError, match="permission_denied"):
         asyncio.run(server._call_tool_for_profile("execute_blender_code", {"code": "print(1)"}))
+
+
+class Bas07Bridge(FakeBridge):
+    def __init__(self):
+        super().__init__(["studio_scene_inspect_v1", "studio_create_object_v1",
+                          "studio_create_text_v1", "studio_set_transform_v1",
+                          "studio_manage_collection_v1"])
+        self.objects = {}
+        self.collections = {}
+
+    def __call__(self, command, params, read_only):
+        if command in ("studio_create_text_v1", "studio_set_transform_v1",
+                       "studio_manage_collection_v1"):
+            self.calls.append((command, params, read_only))
+            if params["scene_revision"] != self.revision:
+                raise ValueError("stale_scene: revision")
+            if command == "studio_create_text_v1":
+                ident = str(uuid4())
+                self.objects[ident] = params["name"]
+                name = params["name"]
+            elif command == "studio_set_transform_v1":
+                obj_id = params["object_id"]
+                if obj_id not in self.objects:
+                    raise ValueError("object_not_found: absent")
+                if params["action"] == "duplicate":
+                    ident = str(uuid4())
+                    name = params["name"]
+                    self.objects[ident] = name
+                else:
+                    ident = obj_id
+                    name = params["name"] if params["action"] == "rename" else self.objects[ident]
+                    self.objects[ident] = name
+            else:
+                action = params["action"]
+                if action == "create":
+                    ident, name = str(uuid4()), params["name"]
+                    self.collections[ident] = name
+                elif action == "rename":
+                    ident, name = params["collection_id"], params["name"]
+                    if ident not in self.collections:
+                        raise ValueError("object_not_found: absent")
+                    self.collections[ident] = name
+                else:
+                    ident = params["object_id"]
+                    if ident not in self.objects or params["collection_id"] not in self.collections:
+                        raise ValueError("object_not_found: absent")
+                    name = self.objects[ident]
+            self.revision += 1
+            return {"scene_id": SCENE, "scene_revision": self.revision,
+                    "object_id": ident, "name": name}
+        return super().__call__(command, params, read_only)
+
+
+def _bas07_request(bridge, operation, key, **kwargs):
+    return request(operation, "scene", scene_id=SCENE,
+                   scene_revision=bridge.revision, idempotency_key=key, **kwargs)
+
+
+def test_bas07_typed_create_text_rename_duplicate_and_collection():
+    bridge = Bas07Bridge()
+    gateway = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL))
+    assert {"studio_set_transform", "studio_manage_collection", "studio_create_object"} <= set(
+        gateway.handshake()["operations"])
+    created = gateway.invoke(_bas07_request(
+        bridge, "studio_create_object", "text", name="A",
+        spec={"kind": "text", "text": "Vietnamese Unicode: Xin chào"}), "studio_create_object")
+    assert created["status"] == "succeeded", created
+    oid = created["result"]["objects"][0]["id"]
+    renamed = gateway.invoke(_bas07_request(
+        bridge, "studio_set_transform", "rename", object_id=oid,
+        action="rename", name="B"), "studio_set_transform")
+    assert renamed["status"] == "succeeded", renamed
+    assert renamed["result"]["objects"][0]["id"] == oid
+    copied = gateway.invoke(_bas07_request(
+        bridge, "studio_set_transform", "copy", object_id=oid,
+        action="duplicate", name="B Copy"), "studio_set_transform")
+    assert copied["status"] == "succeeded", copied
+    assert copied["result"]["objects"][0]["id"] != oid
+    collection = gateway.invoke(_bas07_request(
+        bridge, "studio_manage_collection", "collection", action="create",
+        name="Props"), "studio_manage_collection")
+    assert collection["status"] == "succeeded", collection
+    cid = collection["result"]["objects"][0]["id"]
+    moved = gateway.invoke(_bas07_request(
+        bridge, "studio_manage_collection", "move", action="move_object",
+        collection_id=cid, object_id=oid), "studio_manage_collection")
+    assert moved["status"] == "succeeded", moved
+    assert moved["result"]["objects"][0]["id"] == oid
+    assert all(command != "execute_code" for command, _, _ in bridge.calls)
+
+
+@pytest.mark.parametrize("location", [[float("nan"), 0, 0], [float("inf"), 0, 0],
+                                       [100001.0, 0, 0]])
+def test_bas07_rejects_bad_coordinates_without_mutation(location):
+    bridge = Bas07Bridge()
+    req = _bas07_request(bridge, "studio_create_object", "bad", name="Bad",
+                         spec={"kind": "primitive", "primitive": "cube"}, location=location)
+    response = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL)).invoke(req, "studio_create_object")
+    assert response["error"]["code"] == "invalid_input"
+    assert all(cmd not in ("studio_create_object_v1", "studio_create_text_v1")
+               for cmd, _, _ in bridge.calls)
+
+
+def test_bas07_missing_object_and_delete_fail_closed():
+    bridge = Bas07Bridge()
+    gateway = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL))
+    missing = gateway.invoke(_bas07_request(
+        bridge, "studio_set_transform", "missing", object_id=str(uuid4()),
+        action="rename", name="X"), "studio_set_transform")
+    assert missing["error"]["code"] == "object_not_found"
+    delete = gateway.invoke(_bas07_request(
+        bridge, "studio_delete_object", "delete", object_id=str(uuid4()),
+        snapshot_id=str(uuid4()), confirmation_token="invalid"),
+        "studio_delete_object")
+    assert delete["error"]["code"] == "permission_denied"
+    assert not any(cmd == "studio_delete_object_v1" for cmd, _, _ in bridge.calls)

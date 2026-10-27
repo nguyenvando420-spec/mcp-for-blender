@@ -7,6 +7,7 @@ authentication are intentionally NOT advertised as executable capabilities.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from .contracts import (
-    Capabilities, ContractVersion, ErrorCode, ObjectRef, PrimitiveSpec,
+    Capabilities, ContractVersion, ErrorCode, ObjectRef, PrimitiveSpec, TextSpec,
     ResultPayload, SceneDiff, StudioError, StudioResponse, ensure_supported,
 )
 from ..security_policy import Policy, PolicyDenied, authorize_studio_request
@@ -25,13 +26,16 @@ ADDON_PROTOCOL_MIN = 15
 HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
     "studio_create_object": "studio_create_object_v1",
+    "studio_set_transform": "studio_set_transform_v1",
+    "studio_manage_collection": "studio_manage_collection_v1",
+    "studio_delete_object": "studio_delete_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
     "studio_scene_save": "studio_scene_snapshot_v1",
     "studio_scene_open": "studio_scene_open_v1",
     "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
-MUTATION_TOOLS = frozenset({"studio_create_object"})
+MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection"})
 
 
 def visible_studio_tools(profile):
@@ -41,8 +45,32 @@ def visible_studio_tools(profile):
         return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
                 | ({"studio_scene_snapshot", "studio_scene_save"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
                 | ({"studio_scene_open"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set())
+                | ({"studio_delete_object"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set())
                 | ({"studio_scene_restore"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set()))
     return frozenset()
+
+
+def _validate_numeric_bounds(req):
+    """Second-line limits on top of BAS-03's strict wire types.
+
+    These limits are additive runtime policy; canonical v1 JSON Schema remains
+    unchanged until an explicit contract-version/schema regeneration.
+    """
+    if req.operation not in ("studio_create_object", "studio_set_transform"):
+        return
+    for field, limit in (("location", 100000.0), ("rotation_euler", 1000.0),
+                         ("scale", 1000.0)):
+        values = getattr(req, field, None)
+        if values is None:
+            continue
+        if any(not math.isfinite(v) or abs(v) > limit for v in values):
+            raise ValueError("invalid_input: out-of-range " + field)
+        if field == "scale" and any(v <= 0 for v in values):
+            raise ValueError("invalid_input: scale must be positive")
+    if req.operation == "studio_set_transform" and req.action == "duplicate":
+        if req.name is None or any(getattr(req, f) is not None for f in
+                                    ("location", "rotation_euler", "scale")):
+            raise ValueError("invalid_input: duplicate requires name only")
 
 
 class StudioGateway:
@@ -66,9 +94,12 @@ class StudioGateway:
         advertised = set(info.get("capabilities") or [])
         available = {name for name, command in HANDLERS.items() if command in advertised}
         return Capabilities(addon_protocol=protocol, operations=available,
-                            features=({"primitive-create-v1"} if "studio_create_object" in available else set())
+                            features=({"primitive-create-v1", "text-create-v1"} if "studio_create_object" in available and "studio_create_text_v1" in advertised else ({"primitive-create-v1"} if "studio_create_object" in available else set()))
                             | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set())
-                            | ({"scene-snapshot-v1"} if "studio_scene_snapshot" in available else set()))
+                            | ({"scene-snapshot-v1"} if "studio_scene_snapshot" in available else set())
+                            | ({"object-transforms-v1"} if "studio_set_transform" in available else set())
+                            | ({"collections-v1"} if "studio_manage_collection" in available else set())
+                            | ({"confirmed-delete-v1"} if "studio_delete_object" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -116,11 +147,12 @@ class StudioGateway:
         except (ValueError, TypeError, AttributeError):
             return UUID(int=0), 0
 
-    def _failed(self, raw, code, message):
+    def _failed(self, raw, code, message, details=None):
         sid, revision = self._context(raw)
         response = StudioResponse(
             request_id=self._id(raw), scene_id=sid, scene_revision=max(revision, 0),
-            status="failed", error=StudioError(code=code, message=str(message)[:256] or code.value),
+            status="failed", error=StudioError(code=code, message=str(message)[:256] or code.value,
+                                               details=details or {}),
         )
         return response.model_dump(mode="json")
 
@@ -139,6 +171,7 @@ class StudioGateway:
                                            confirmation_secret=self.confirmation_secret)
             caps = self.capabilities()
             ensure_supported(req, caps)
+            _validate_numeric_bounds(req)
             if req.operation == "studio_scene_inspect":
                 reply = self.bridge(HANDLERS[req.operation],
                                     {"query": req.query or "", "limit": req.limit}, True)
@@ -170,7 +203,8 @@ class StudioGateway:
                             snapshot_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
                             idempotency_key=req.idempotency_key, label=label,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != artifact.sha256:
                             raise SnapshotError("Blender snapshot checksum mismatch")
                     if req.operation == "studio_scene_save":
@@ -230,7 +264,8 @@ class StudioGateway:
                             scene_revision=req.scene_revision,
                             idempotency_key="pre-open:" + req.idempotency_key,
                             label=str(req.input_uri) + "|" + req.expected_sha256,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != backup.sha256:
                             raise SnapshotError("Pre-open snapshot checksum mismatch")
                     store.consume_confirmation(req.confirmation_token)
@@ -271,7 +306,8 @@ class StudioGateway:
                             backup_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
                             idempotency_key="pre-restore:" + req.idempotency_key,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != backup.sha256:
                             raise SnapshotError("Backup checksum mismatch")
                     restored_reply = self.bridge(HANDLERS[req.operation], {
@@ -296,21 +332,128 @@ class StudioGateway:
                     return self._failed(raw, ErrorCode.CONFLICT,
                                         "Restore denied or state unknown: " + type(exc).__name__)
             elif req.operation == "studio_create_object":
-                if not isinstance(req.spec, PrimitiveSpec):
-                    return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
-                                        "Text creation belongs to BAS-07")
-                reply = self.bridge(HANDLERS[req.operation], {
+                args = {
                     "scene_id": str(req.scene_id),
                     "scene_revision": req.scene_revision,
                     "idempotency_key": req.idempotency_key,
                     "name": req.name,
-                    "primitive": req.spec.primitive,
                     "location": list(req.location),
-                }, False)
+                }
+                if isinstance(req.spec, PrimitiveSpec):
+                    args["primitive"] = req.spec.primitive
+                    command = HANDLERS[req.operation]
+                elif isinstance(req.spec, TextSpec):
+                    args["text"] = req.spec.text
+                    command = "studio_create_text_v1"
+                    if command not in set(self._info().get("capabilities") or []):
+                        return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
+                                            "Blender add-on lacks text creation")
+                else:
+                    return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
+                                        "Unsupported creation variant")
+                reply = self.bridge(command, args, False)
                 obj = ObjectRef(id=UUID(reply["object_id"]), name=reply["name"], kind="object")
                 result = ResultPayload(objects=[obj],
                                        scene_diff=SceneDiff(created=[obj.id]),
-                                       summary="Primitive created" if not reply.get("replayed") else "Idempotent replay")
+                                       summary="Object created" if not reply.get("replayed") else "Idempotent replay")
+            elif req.operation == "studio_set_transform":
+                args = {
+                    "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
+                    "idempotency_key": req.idempotency_key, "object_id": str(req.object_id),
+                    "action": req.action, "name": req.name,
+                    "location": list(req.location) if req.location is not None else None,
+                    "rotation_euler": list(req.rotation_euler) if req.rotation_euler is not None else None,
+                    "scale": list(req.scale) if req.scale is not None else None,
+                }
+                reply = self.bridge(HANDLERS[req.operation], args, False)
+                oid = UUID(reply["object_id"])
+                obj = ObjectRef(id=oid, name=reply["name"], kind="object")
+                result = ResultPayload(
+                    objects=[obj],
+                    scene_diff=SceneDiff(created=[oid] if req.action == "duplicate" else [],
+                                         updated=[] if req.action == "duplicate" else [oid]),
+                    summary="Idempotent replay" if reply.get("replayed") else req.action,
+                )
+            elif req.operation == "studio_manage_collection":
+                reply = self.bridge(HANDLERS[req.operation], {
+                    "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
+                    "idempotency_key": req.idempotency_key, "action": req.action,
+                    "name": req.name,
+                    "collection_id": str(req.collection_id) if req.collection_id else None,
+                    "object_id": str(req.object_id) if req.object_id else None,
+                }, False)
+                ident = UUID(reply["object_id"])
+                kind = "object" if req.action == "move_object" else "collection"
+                obj = ObjectRef(id=ident, name=reply["name"], kind=kind)
+                result = ResultPayload(
+                    objects=[obj],
+                    scene_diff=SceneDiff(created=[ident] if req.action == "create" else [],
+                                         updated=[] if req.action == "create" else [ident]),
+                    summary="Idempotent replay" if reply.get("replayed") else req.action,
+                )
+            elif req.operation == "studio_delete_object":
+                from .snapshot_store import SnapshotStore, SnapshotError
+                backup_id = None
+                try:
+                    store = SnapshotStore(os.getenv("BLENDER_MCP_STUDIO_ROOT", ""))
+                    prior = store.verify(str(req.snapshot_id))
+                    if prior.scene_id != str(req.scene_id) or prior.scene_revision != req.scene_revision:
+                        raise SnapshotError("Preview snapshot does not match the live scene revision")
+                    # The target must be in the preview inventory. Explicit
+                    # confirmation is bound to object UUID in BAS-04 policy.
+                    manifest = json.loads((prior.path.parent / "manifest.json").read_text())
+                    if str(req.object_id) not in {
+                            item.get("object_id") for item in manifest.get("scene_inventory", [])}:
+                        raise SnapshotError("Object not present in approved scene preview")
+                    backup_id, backup_path, done = store.begin_keyed(
+                        scene_id=str(req.scene_id), scene_revision=req.scene_revision,
+                        idempotency_key="pre-delete:" + req.idempotency_key,
+                        label=str(req.object_id) + "|" + str(req.snapshot_id))
+                    if not done:
+                        saved = self.bridge(HANDLERS["studio_scene_snapshot"], {
+                            "scene_id": str(req.scene_id),
+                            "scene_revision": req.scene_revision,
+                            "snapshot_id": backup_id, "path": str(backup_path)}, False)
+                        backup = store.finalize(
+                            backup_id, scene_id=str(req.scene_id),
+                            scene_revision=req.scene_revision,
+                            idempotency_key="pre-delete:" + req.idempotency_key,
+                            label=str(req.object_id) + "|" + str(req.snapshot_id),
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
+                        if backup.sha256 != saved.get("sha256"):
+                            raise SnapshotError("Pre-delete snapshot checksum mismatch")
+                    # The preview is consented to at a particular content
+                    # state. A direct GUI mutation does NOT necessarily change
+                    # _bas05_scene_revision, so compare both snapshots before
+                    # burning the token or dispatching the destructive handler.
+                    latest = store.verify(backup_id)
+                    prior_manifest = json.loads((prior.path.parent / "manifest.json").read_text())
+                    latest_manifest = json.loads((latest.path.parent / "manifest.json").read_text())
+                    before_hash = prior_manifest.get("scene_fingerprint")
+                    after_hash = latest_manifest.get("scene_fingerprint")
+                    if (not isinstance(before_hash, str) or len(before_hash) != 64
+                            or before_hash != after_hash):
+                        raise SnapshotError("Direct GUI mutation invalidated delete preview")
+                    store.consume_confirmation(req.confirmation_token)
+                    reply = self.bridge(HANDLERS["studio_delete_object"], {
+                        "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
+                        "object_id": str(req.object_id), "snapshot_id": str(req.snapshot_id),
+                        "backup_snapshot_id": backup_id,
+                        "confirmation_token": req.confirmation_token}, False)
+                    if (reply.get("object_id") != str(req.object_id)
+                            or reply.get("scene_id") != str(req.scene_id)
+                            or reply.get("scene_revision") != req.scene_revision + 1):
+                        raise SnapshotError("Delete reply mismatch; state unknown")
+                    result = ResultPayload(
+                        snapshot_id=UUID(backup_id),
+                        scene_diff=SceneDiff(deleted=[req.object_id]),
+                        summary="Object deleted with pre-delete snapshot=" + backup_id)
+                except Exception as exc:
+                    return self._failed(raw, ErrorCode.CONFLICT,
+                                        "Delete denied or state unknown: " + type(exc).__name__,
+                                        details={"pre_delete_snapshot_id": backup_id or "",
+                                                 "may_have_partial_effects": backup_id is not None})
             else:
                 return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE, "No BAS-05 handler")
             response = StudioResponse(
@@ -323,10 +466,14 @@ class StudioGateway:
         except PolicyDenied as exc:
             return self._failed(raw, ErrorCode.PERMISSION_DENIED, str(exc))
         except ValueError as exc:
-            if str(exc) == ErrorCode.CAPABILITY_UNAVAILABLE.value:
+            if str(exc).startswith("invalid_input:"):
+                code = ErrorCode.INVALID_INPUT
+            elif str(exc) == ErrorCode.CAPABILITY_UNAVAILABLE.value:
                 code = ErrorCode.CAPABILITY_UNAVAILABLE
             elif "stale_scene" in str(exc):
                 code = ErrorCode.STALE_SCENE
+            elif "object_not_found:" in str(exc):
+                code = ErrorCode.OBJECT_NOT_FOUND
             elif "conflict" in str(exc):
                 code = ErrorCode.CONFLICT
             else:
@@ -339,6 +486,10 @@ class StudioGateway:
             message = str(exc)
             if "stale_scene:" in message:
                 return self._failed(raw, ErrorCode.STALE_SCENE, "Scene revision mismatch")
+            if "invalid_input:" in message:
+                return self._failed(raw, ErrorCode.INVALID_INPUT, "Invalid Blender arguments")
+            if "object_not_found:" in message:
+                return self._failed(raw, ErrorCode.OBJECT_NOT_FOUND, "Object not found")
             if "conflict:" in message:
                 return self._failed(raw, ErrorCode.CONFLICT, "Idempotency key conflict")
             return self._failed(raw, ErrorCode.INTERNAL, type(exc).__name__)

@@ -186,6 +186,7 @@ async def accept(port, record):
             assert manifest["scene_id"] == sid
             assert manifest["scene_revision"] == rev + 51
             assert manifest["sha256"] == hashlib.sha256(scene_copy.read_bytes()).hexdigest()
+            # Mutate then restore with a one-shot trusted acceptance token.
             # Mutate material nodes and camera lens in Blender GUI outside MCP.
             # A successful restore must revert ALL these exact values.
             mutated = await bas12_golden_gui("mutate")
@@ -334,6 +335,143 @@ async def accept(port, record):
                 "old_revision": rev + 53, "new_revision": rev + 54,
                 "socket_kept_alive": True, "checksum": file_sha,
             }
+            # BAS-07: 10 real typed GUI creates/edits/collection actions,
+            # then snapshot-preview + resource-confirmed delete.
+            newid, basrev = opened["scene_id"], rev + 54
+            bas_actions = []
+
+            async def bas07(operation, key, **fields):
+                nonlocal basrev
+                raw = {"operation": operation, "request_id": str(uuid4()),
+                       "effect_scope": "scene", "scene_id": newid,
+                       "scene_revision": basrev, "idempotency_key": key, **fields}
+                resp = unpack(await client.call_tool(operation, {"request": raw}))
+                assert resp["status"] == "succeeded", (operation, key, resp)
+                assert resp["scene_revision"] == basrev + 1, resp
+                basrev += 1
+                bas_actions.append({"op": operation, "key": key, "revision": basrev})
+                return resp["result"]["objects"][0]["id"]
+
+            title_id = await bas07("studio_create_object", "bas07-title",
+                                   name="BAS07_Title",
+                                   spec={"kind": "text", "text": "Xin chào - BAS07"},
+                                   location=[1, 0, 1])
+            assert await bas07("studio_set_transform", "bas07-rename",
+                               object_id=title_id, action="rename",
+                               name="BAS07_Renamed") == title_id
+            assert await bas07("studio_set_transform", "bas07-transform",
+                               object_id=title_id, action="transform",
+                               location=[2, 2, 1], rotation_euler=[0, 0, 0.5],
+                               scale=[1.2, 1.2, 1.2]) == title_id
+            duplicate_id = await bas07("studio_set_transform", "bas07-duplicate",
+                                      object_id=title_id, action="duplicate",
+                                      name="BAS07_Copy")
+            assert duplicate_id != title_id
+            collection_id = await bas07("studio_manage_collection", "bas07-col",
+                                         action="create", name="BAS07_Collection")
+            assert await bas07("studio_manage_collection", "bas07-col-rename",
+                               action="rename", collection_id=collection_id,
+                               name="BAS07_Props") == collection_id
+            assert await bas07("studio_manage_collection", "bas07-col-move",
+                               action="move_object", object_id=title_id,
+                               collection_id=collection_id) == title_id
+            cube_id = await bas07("studio_create_object", "bas07-cube",
+                                  name="BAS07_Cube",
+                                  spec={"kind": "primitive", "primitive": "cube"})
+            assert await bas07("studio_set_transform", "bas07-cube-scale",
+                               object_id=cube_id, action="transform",
+                               scale=[2, 2, 2]) == cube_id
+            assert await bas07("studio_set_transform", "bas07-cube-rename",
+                               object_id=cube_id, action="rename",
+                               name="BAS07_FinalCube") == cube_id
+
+            # Simulate user edits in Blender's GUI main-thread timer. These
+            # do not enter the MCP dispatcher and do NOT advance BAS-05 rev.
+            # Each action must invalidate an otherwise valid delete preview.
+            gui_actions = []
+            for action in ("translate", "mesh_vertex", "material", "camera", "rename"):
+                stale_preview = unpack(await client.call_tool(
+                    "studio_scene_snapshot", {"request": {
+                        "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                        "effect_scope": "file", "scene_id": newid,
+                        "scene_revision": basrev,
+                        "idempotency_key": "bas07-gui-preview-" + action,
+                        "label": "gui-edit-preview-" + action}}))
+                assert stale_preview["status"] == "succeeded", stale_preview
+                stale_id = stale_preview["result"]["snapshot_id"]
+                change_request = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent / "bas07-direct-edit.request.json"
+                change_result = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent / "bas07-direct-edit.result.json"
+                if change_result.exists():
+                    change_result.unlink()
+                change_request.write_text(json.dumps({
+                    "action": action, "object_id": cube_id}))
+                deadline = time.monotonic() + 15
+                while not change_result.exists() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.1)
+                assert change_result.exists(), "GUI timer did not acknowledge edit"
+                ack = json.loads(change_result.read_text())
+                assert ack["success"], ack
+                assert ack["before_revision"] == ack["after_revision"] == basrev, ack
+                blocked_token = issue_resource_confirmation(
+                    secret, operation="studio_delete_object", scene_id=newid,
+                    scene_revision=basrev, snapshot_id=stale_id, resource=cube_id)
+                rejected = unpack(await client.call_tool("studio_delete_object", {"request": {
+                    "operation": "studio_delete_object", "request_id": str(uuid4()),
+                    "effect_scope": "scene", "scene_id": newid, "scene_revision": basrev,
+                    "idempotency_key": "bas07-gui-delete-" + action,
+                    "object_id": cube_id, "snapshot_id": stale_id,
+                    "confirmation_token": blocked_token}}))
+                assert rejected["status"] == "failed", (action, rejected)
+                assert rejected["error"]["code"] == "conflict", (action, rejected)
+                live = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                    "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                    "effect_scope": "read", "limit": 200}}))
+                assert live["scene_revision"] == basrev, (action, live)
+                assert any(x["object_id"] == cube_id for x in
+                           json.loads(live["result"]["summary"])["objects"]), action
+                gui_actions.append({"action": action, "rejected": True,
+                                    "revision_unchanged": True})
+            record["bas07_out_of_band_gui"] = gui_actions
+
+            preview = unpack(await client.call_tool("studio_scene_snapshot", {"request": {
+                "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": newid, "scene_revision": basrev,
+                "idempotency_key": "bas07-before-delete", "label": "delete-preview"}}))
+            assert preview["status"] == "succeeded", preview
+            preview_id = preview["result"]["snapshot_id"]
+            accepted_delete = issue_resource_confirmation(
+                secret, operation="studio_delete_object", scene_id=newid,
+                scene_revision=basrev, snapshot_id=preview_id,
+                resource=duplicate_id)
+            delete_request = {
+                "operation": "studio_delete_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid, "scene_revision": basrev,
+                "idempotency_key": "bas07-delete", "object_id": duplicate_id,
+                "snapshot_id": preview_id, "confirmation_token": accepted_delete}
+            deleted = unpack(await client.call_tool(
+                "studio_delete_object", {"request": delete_request}))
+            assert deleted["status"] == "succeeded", deleted
+            assert deleted["scene_revision"] == basrev + 1
+            assert duplicate_id in deleted["result"]["scene_diff"]["deleted"]
+            assert deleted["result"]["snapshot_id"] != preview_id
+            again = unpack(await client.call_tool("studio_delete_object", {"request": {
+                **delete_request, "request_id": str(uuid4())}}))
+            assert again["status"] == "failed"
+            basrev += 1
+            final = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 200}}))
+            assert final["status"] == "succeeded"
+            assert final["scene_revision"] == basrev
+            items = json.loads(final["result"]["summary"])["objects"]
+            assert not any(x["object_id"] == duplicate_id for x in items)
+            assert any(x["object_id"] == title_id and x["name"] == "BAS07_Renamed"
+                       and x["type"] == "FONT" for x in items)
+            record["bas07"] = {"operations": bas_actions, "delete_passed": True,
+                               "delete_replay_denied": True, "preview_id": preview_id,
+                               "pre_delete_backup": deleted["result"]["snapshot_id"],
+                               "deleted_object_id": duplicate_id,
+                               "final_revision": basrev}
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
                                        "after_revision": rev + 53,
                                        "backup_id": restored["result"]["snapshot_id"]}
