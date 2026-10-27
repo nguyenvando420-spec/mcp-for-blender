@@ -1907,8 +1907,79 @@ class BlenderMCPServer:
         except (ValueError, TypeError, AttributeError):
             return None
 
-    def studio_scene_inspect_v1(self, query="", limit=20, offset=0, object_id=None):
-        """Paged read-only scene tree; UUID lookup is applied before pagination."""
+    def _bas08_bind_ids(self, scene, sid, revision, idempotency_key):
+        """Explicit local metadata binding with preflight and rollback."""
+        if self.profile not in ("studio-local", "developer-local"):
+            raise ValueError("permission_denied: bind IDs requires local editor")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise ValueError("invalid_input: missing ID binding idempotency key")
+        cache = json.loads(scene.get("_bas05_idempotency_cache", "{}"))
+        normalized = json.dumps(["bind_missing_ids", sid, revision], separators=(",", ":"))
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if idempotency_key in cache:
+            saved = cache[idempotency_key]
+            if saved["digest"] != digest:
+                raise ValueError("conflict: ID binding idempotency key reused")
+            return dict(saved["reply"], replayed=True)
+        objects = sorted(scene.objects, key=lambda o: o.name_full)
+        if len(objects) > 2500:
+            raise ValueError("capability_unavailable: too many objects for stable ID binding")
+        cols = sorted([scene.collection, *scene.collection.children_recursive],
+                      key=lambda c: c.name_full)
+        materials = sorted({slot.material for obj in objects
+                            for slot in obj.material_slots if slot.material},
+                           key=lambda m: m.name_full)
+        if len(cols) > 2500 or len(materials) > 2500:
+            raise ValueError("capability_unavailable: too many datablocks for ID binding")
+        operations = []
+        for blocks, key in ((objects, "_bas05_object_id"),
+                            (cols, "_bas07_collection_id"),
+                            (materials, "_bas08_material_id")):
+            seen = set()
+            for block in blocks:
+                old = block.get(key)
+                stable = self._bas08_uuid(old)
+                if stable and stable not in seen:
+                    seen.add(stable)
+                    continue
+                if block.library is not None:
+                    raise ValueError(
+                        "capability_unavailable: make linked datablocks local before binding IDs")
+                new = str(uuid.uuid4())
+                while new in seen:
+                    new = str(uuid.uuid4())
+                operations.append((block, key, old, new))
+                seen.add(new)
+        written = []
+        try:
+            for block, key, old, new in operations:
+                block[key] = new
+                written.append((block, key, old))
+        except Exception:
+            for block, key, old in reversed(written):
+                try:
+                    if old is None:
+                        del block[key]
+                    else:
+                        block[key] = old
+                except Exception:
+                    raise ValueError("conflict: partial ID assignment, restore scene snapshot")
+            raise
+        if operations:
+            scene["_bas05_scene_revision"] = revision + 1
+            self._bas08_mark_commit(scene)
+        reply = {"scene_id": sid, "scene_revision": revision + int(bool(operations)),
+                 "ids_bound": len(operations)}
+        cache[idempotency_key] = {"digest": digest, "reply": reply}
+        if len(cache) > 128:
+            cache.pop(next(iter(cache)))
+        scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        return reply
+
+    def studio_scene_inspect_v1(self, query="", limit=20, offset=0, object_id=None,
+                                bind_missing_ids=False, scene_id=None,
+                                scene_revision=None, idempotency_key=None):
+        """Paged inspect, with optional explicit scene-scoped ID binding."""
         if not isinstance(query, str) or len(query) > 4096:
             raise ValueError("invalid_input: scene query")
         if type(limit) is not int or not 1 <= limit <= 500:
@@ -1921,6 +1992,17 @@ class BlenderMCPServer:
             if target_id is None:
                 raise ValueError("invalid_input: object_id")
         scene, sid, revision = self._studio_scene_context_v1()
+        binding = None
+        if type(bind_missing_ids) is not bool:
+            raise ValueError("invalid_input: bind_missing_ids must be boolean")
+        if bind_missing_ids:
+            if (scene_id != sid or type(scene_revision) is not int
+                    or scene_revision != revision):
+                raise ValueError("stale_scene: ID binding context changed")
+            if query or offset or object_id is not None:
+                raise ValueError("invalid_input: ID binding requires entire scene")
+            binding = self._bas08_bind_ids(scene, sid, revision, idempotency_key)
+            revision = binding["scene_revision"]
         objects = sorted(scene.objects, key=lambda o: o.name_full)
         counts = {}
         for obj in objects:
@@ -1981,6 +2063,7 @@ class BlenderMCPServer:
         return {
             "scene_id": sid, "scene_revision": revision,
             "scene_fingerprint": self._bas08_marker[2],
+            "ids_bound": binding["ids_bound"] if binding else 0,
             "name": scene.name, "object_count": len(objects),
             "matched_count": len(filtered), "offset": offset, "limit": limit,
             "has_more": offset + limit < len(filtered),
