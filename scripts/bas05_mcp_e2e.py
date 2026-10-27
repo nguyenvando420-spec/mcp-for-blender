@@ -65,7 +65,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert handshake["operations"] == ["studio_create_object", "studio_scene_inspect"]
+            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
@@ -134,6 +134,36 @@ async def accept(port, record):
                 "elapsed_seconds": round(time.monotonic() - stress_started, 3),
                 "last_revision": rev + 51,
             }
+            # BAS-12: immutable sandboxed .blend copy created by real GUI bpy,
+            # verified and replayed without creating a second snapshot.
+            sandbox_request = {
+                "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid,
+                "scene_revision": rev + 51,
+                "idempotency_key": "bas12-gui-snapshot", "label": "golden-e2e",
+            }
+            snap = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": sandbox_request}))
+            assert snap["status"] == "succeeded", snap
+            snapshot_id = snap["result"]["snapshot_id"]
+            assert snap["scene_revision"] == rev + 51, snap
+            reissued = unpack(await client.call_tool(
+                "studio_scene_snapshot",
+                {"request": {**sandbox_request, "request_id": str(uuid4())}}))
+            assert reissued["status"] == "succeeded", reissued
+            assert reissued["result"]["snapshot_id"] == snapshot_id, reissued
+            manifest_path = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / ".bas12-snapshots" / snapshot_id / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            scene_copy = manifest_path.parent / "scene.blend"
+            assert manifest["scene_id"] == sid
+            assert manifest["scene_revision"] == rev + 51
+            assert manifest["sha256"] == hashlib.sha256(scene_copy.read_bytes()).hexdigest()
+            record["bas12_snapshot"] = {
+                "snapshot_id": snapshot_id, "sha256": manifest["sha256"],
+                "bytes": manifest["bytes"], "replay": True,
+                "path": str(scene_copy), "manifest": str(manifest_path),
+                "scene_revision": manifest["scene_revision"],
+            }
             record.update({"handshake": handshake, "scene_id": sid,
                            "initial_revision": rev, "new_revision": made["scene_revision"],
                            "object_id": oid, "object_name": "BAS05_Cube",
@@ -149,6 +179,10 @@ def main():
     args = ap.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    studio_root = output / "studio-sandbox"
+    studio_root.mkdir(mode=0o700, exist_ok=True)
+    studio_root.chmod(0o700)
+    os.environ["BLENDER_MCP_STUDIO_ROOT"] = str(studio_root)
     spec = json.loads((ROOT / "blender-runtime.json").read_text())
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     blender = ROOT / ".blender-runtime" / "runtime" / spec["artifacts"]["Linux-x86_64"]["executable"]
@@ -194,6 +228,19 @@ def main():
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat
+        # Reopen the saved snapshot in a separate headless Blender process so
+        # the interactive user scene cannot be destroyed by acceptance tests.
+        snapshot = Path(record["bas12_snapshot"]["path"])
+        reopen_script = ROOT / "scripts" / "bas12_snapshot_reopen.py"
+        reopened = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(snapshot), record["scene_id"], str(record["bas12_snapshot"]["scene_revision"])
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-reopen.log").write_text(reopened.stdout + reopened.stderr)
+        assert reopened.returncode == 0, reopened.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in reopened.stdout, reopened.stdout[-1000:]
+        record["bas12_snapshot"]["reopen"] = "passed"
         record["bas06_heartbeat"] = heartbeat
         record["passed"] = True
         (output / "bas05-e2e.json").write_text(json.dumps(record, indent=2) + "\n")
