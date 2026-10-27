@@ -7,6 +7,7 @@ authentication are intentionally NOT advertised as executable capabilities.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +25,7 @@ ADDON_PROTOCOL_MIN = 15
 HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
     "studio_create_object": "studio_create_object_v1",
+    "studio_scene_snapshot": "studio_scene_snapshot_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
 MUTATION_TOOLS = frozenset({"studio_create_object"})
@@ -33,7 +35,8 @@ def visible_studio_tools(profile):
     """No remote/worker tools without a trusted authenticated entrypoint."""
     from ..security_policy import Profile
     if profile in (Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
-        return READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
+        return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
+                | ({"studio_scene_snapshot"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set()))
     return frozenset()
 
 
@@ -57,7 +60,8 @@ class StudioGateway:
         available = {name for name, command in HANDLERS.items() if command in advertised}
         return Capabilities(addon_protocol=protocol, operations=available,
                             features=({"primitive-create-v1"} if "studio_create_object" in available else set())
-                            | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set()))
+                            | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set())
+                            | ({"scene-snapshot-v1"} if "studio_scene_snapshot" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -134,6 +138,40 @@ class StudioGateway:
                     "name": reply.get("name"), "object_count": reply.get("object_count"),
                     "objects": reply.get("objects", []),
                 }, ensure_ascii=False))
+            elif req.operation == "studio_scene_snapshot":
+                from .snapshot_store import SnapshotStore, SnapshotError
+                root = os.getenv("BLENDER_MCP_STUDIO_ROOT", "")
+                try:
+                    store = SnapshotStore(root)
+                    snapshot_id, path, replay = store.begin_keyed(
+                        scene_id=str(req.scene_id), scene_revision=req.scene_revision,
+                        idempotency_key=req.idempotency_key, label=req.label or "")
+                    if replay:
+                        artifact = store.verify(snapshot_id)
+                    else:
+                        saved = self.bridge(HANDLERS[req.operation], {
+                            "scene_id": str(req.scene_id),
+                            "scene_revision": req.scene_revision,
+                            "snapshot_id": snapshot_id,
+                            "path": str(path),
+                        }, False)
+                        if saved.get("scene_id") != str(req.scene_id) or saved.get("scene_revision") != req.scene_revision:
+                            raise SnapshotError("Blender snapshot reply has mismatched scene context")
+                        artifact = store.finalize(
+                            snapshot_id, scene_id=str(req.scene_id),
+                            scene_revision=req.scene_revision,
+                            idempotency_key=req.idempotency_key)
+                        if saved.get("sha256") != artifact.sha256:
+                            raise SnapshotError("Blender snapshot checksum mismatch")
+                    reply = {"scene_id": artifact.scene_id,
+                             "scene_revision": artifact.scene_revision}
+                    result = ResultPayload(
+                        snapshot_id=UUID(artifact.snapshot_id),
+                        summary=("Snapshot replay: " if replay else "Snapshot written: ")
+                                + artifact.sha256)
+                except (SnapshotError, OSError) as exc:
+                    return self._failed(raw, ErrorCode.CONFLICT,
+                                        "Snapshot failed or execution state unknown: " + type(exc).__name__)
             elif req.operation == "studio_create_object":
                 if not isinstance(req.spec, PrimitiveSpec):
                     return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
