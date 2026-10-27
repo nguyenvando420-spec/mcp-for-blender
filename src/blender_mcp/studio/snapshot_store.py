@@ -253,3 +253,68 @@ class SnapshotStore:
                             sha, sid, manifest["scene_revision"], manifest["idempotency_key"])
         finally:
             os.close(fd)
+
+
+    def publish_new(self, snapshot_id: str, output: Path) -> tuple[str, bool]:
+        """Atomically publish a private COPY without overwriting any existing file.
+
+        The destination must already pass BAS-04 canonical_allowed_file.
+        All path components are opened using no-follow dirfds and the copy is
+        staged before an O_EXCL-equivalent hardlink commits the destination.
+        This never hardlinks the immutable source .blend into user output.
+        """
+        checked = self.verify(snapshot_id)
+        requested = Path(output)
+        try:
+            relative = requested.relative_to(self.root)
+        except ValueError as exc:
+            raise SnapshotError("Output outside sandbox root") from exc
+        if (not relative.parts or ".." in relative.parts
+                or requested.name.startswith(".bas12-")):
+            raise SnapshotError("Unsafe output filename")
+        target_fd = _dir_open(self.root)
+        temp = ".bas12-publish-" + uuid4().hex
+        temp_created = False
+        try:
+            for part in relative.parts[:-1]:
+                fd = _child_dir(target_fd, part, create=False)
+                os.close(target_fd)
+                target_fd = fd
+            source_fd = os.open(
+                checked.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                temp_fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                  | getattr(os, "O_NOFOLLOW", 0), 0o600,
+                                  dir_fd=target_fd)
+                temp_created = True
+                digest = hashlib.sha256()
+                try:
+                    while True:
+                        chunk = os.read(source_fd, 1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        view = memoryview(chunk)
+                        while view:
+                            written = os.write(temp_fd, view)
+                            view = view[written:]
+                    os.fsync(temp_fd)
+                finally:
+                    os.close(temp_fd)
+                if digest.hexdigest() != checked.sha256:
+                    raise SnapshotError("Source snapshot changed during copying")
+                # Atomic publish or FileExistsError, even under concurrent
+                # writers; never replace an existing destination.
+                os.link(temp, relative.parts[-1], src_dir_fd=target_fd,
+                        dst_dir_fd=target_fd, follow_symlinks=False)
+                os.fsync(target_fd)
+                return checked.sha256, False
+            finally:
+                os.close(source_fd)
+        finally:
+            if temp_created:
+                try:
+                    os.unlink(temp, dir_fd=target_fd)
+                except FileNotFoundError:
+                    pass
+            os.close(target_fd)
