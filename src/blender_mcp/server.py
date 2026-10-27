@@ -2343,7 +2343,8 @@ def _studio_gateway():
     configured_root = os.getenv("BLENDER_MCP_STUDIO_ROOT")
     roots = (Path(configured_root),) if configured_root else ()
     return StudioGateway(_bridge, Policy(profile_from_env(),
-                                         read_roots=roots, write_roots=roots))
+                                         read_roots=roots, write_roots=roots),
+                         confirmation_secret=os.getenv("BLENDER_MCP_CONFIRM_SECRET", "").encode() or None)
 
 
 @mcp.tool()
@@ -2367,6 +2368,12 @@ def studio_create_object(request: dict) -> dict:
 def studio_scene_snapshot(request: dict) -> dict:
     """Save an immutable BLEND copy into the configured BAS-12 sandbox."""
     return _studio_gateway().invoke(request, "studio_scene_snapshot")
+
+
+@mcp.tool()
+def studio_scene_restore(request: dict) -> dict:
+    """Restore a verified snapshot with pre-restore backup and trusted confirmation."""
+    return _studio_gateway().invoke(request, "studio_scene_restore")
 
 
 
