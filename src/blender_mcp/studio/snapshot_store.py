@@ -170,7 +170,8 @@ class SnapshotStore:
 
     def finalize(self, snapshot_id: str, *, scene_id: str, scene_revision: int,
                  idempotency_key: str, label: str = "",
-                 scene_inventory: list | None = None) -> Snapshot:
+                 scene_inventory: list | None = None,
+                 scene_fingerprint: str | None = None) -> Snapshot:
         rid = _uuid(snapshot_id)
         sid = _uuid(scene_id)
         if type(scene_revision) is not int or scene_revision < 0:
@@ -186,6 +187,10 @@ class SnapshotStore:
                     or not 1 <= len(record["name"]) <= 256):
                 raise SnapshotError("Invalid snapshot object inventory")
             _uuid(record["object_id"])
+        if scene_fingerprint is not None and (
+                not isinstance(scene_fingerprint, str) or len(scene_fingerprint) != 64
+                or any(ch not in "0123456789abcdef" for ch in scene_fingerprint)):
+            raise SnapshotError("Invalid scene fingerprint")
         fd = self._folder(rid)
         try:
             digest = hashlib.sha256()
@@ -216,6 +221,7 @@ class SnapshotStore:
                     [sid, scene_revision, idempotency_key, label],
                     separators=(",", ":")).encode()).hexdigest(),
                 "bytes": st.st_size, "scene_inventory": objects,
+                "scene_fingerprint": scene_fingerprint,
             }
             manifest = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
             _write_exclusive(fd, "manifest.json", manifest)
