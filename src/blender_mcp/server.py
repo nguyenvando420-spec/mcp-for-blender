@@ -2376,6 +2376,11 @@ def studio_scene_restore(request: dict) -> dict:
     return _studio_gateway().invoke(request, "studio_scene_restore")
 
 
+@mcp.tool()
+def studio_scene_save(request: dict) -> dict:
+    """Publish a fresh BLEND copy into the authorized root without overwrite."""
+    return _studio_gateway().invoke(request, "studio_scene_save")
+
 
 # Main execution
 
