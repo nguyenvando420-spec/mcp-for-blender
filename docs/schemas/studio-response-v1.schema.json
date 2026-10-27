@@ -153,8 +153,7 @@
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Capture"
+          "default": null
         },
         "objects": {
           "items": {
