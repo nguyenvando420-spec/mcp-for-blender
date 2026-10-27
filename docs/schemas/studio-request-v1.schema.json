@@ -255,9 +255,9 @@
         },
         "location": {
           "default": [
-            0.0,
-            0.0,
-            0.0
+            0,
+            0,
+            0
           ],
           "maxItems": 3,
           "minItems": 3,
@@ -1364,6 +1364,19 @@
           ],
           "default": null,
           "title": "Scene Revision"
+        },
+        "expected_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Sha256"
         }
       },
       "required": [
