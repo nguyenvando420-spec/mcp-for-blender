@@ -101,6 +101,7 @@ class StudioGateway:
         return Capabilities(addon_protocol=protocol, operations=available,
                             features=({"primitive-create-v1", "text-create-v1"} if "studio_create_object" in available and "studio_create_text_v1" in advertised else ({"primitive-create-v1"} if "studio_create_object" in available else set()))
                             | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set())
+                            | ({"stable-id-binding-v1"} if "studio_bind_ids_v1" in advertised else set())
                             | ({"scene-snapshot-v1"} if "studio_scene_snapshot" in available else set())
                             | ({"object-transforms-v1"} if "studio_set_transform" in available else set())
                             | ({"collections-v1"} if "studio_manage_collection" in available else set())
@@ -180,6 +181,8 @@ class StudioGateway:
             _validate_numeric_bounds(req)
             if req.operation == "studio_scene_inspect":
                 binding = req.bind_missing_ids
+                if binding and "stable-id-binding-v1" not in caps.features:
+                    raise ValueError("capability_unavailable: addon needs BAS-08 stable ID binding")
                 reply = self.bridge(HANDLERS[req.operation], {
                     "query": req.query or "", "limit": req.limit, "offset": req.offset,
                     "object_id": str(req.object_id) if req.object_id else None,

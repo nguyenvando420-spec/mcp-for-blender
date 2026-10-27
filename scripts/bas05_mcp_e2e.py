@@ -707,6 +707,17 @@ def main():
         blend = output / "bas05-scene.blend"
         assert blend.is_file() and blend.stat().st_size > 1000
         record["scene_blend_sha256"] = hashlib.sha256(blend.read_bytes()).hexdigest()
+        # Independent headless reopen proves GUI-bound UUIDs persisted to BLEND.
+        verify_ids = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python",
+            str(ROOT / "scripts" / "bas08_ids_reopen.py"), "--",
+            str(blend), str(record["bas08_binding"]["cube_id"])
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas08-reopen.log").write_text(verify_ids.stdout + verify_ids.stderr)
+        assert verify_ids.returncode == 0, verify_ids.stderr[-1000:]
+        assert "BAS08_IDS_REOPEN_PASS" in verify_ids.stdout
+        record["bas08_binding"]["headless_reopen_passed"] = True
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat

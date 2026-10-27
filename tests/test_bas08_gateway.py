@@ -95,7 +95,8 @@ class IdBindingBridge:
     def __call__(self, command, params, read_only):
         self.calls.append((command, params, read_only))
         if command == "get_addon_info":
-            return {"protocol_version": 16, "capabilities": ["studio_scene_inspect_v1"]}
+            return {"protocol_version": 16,
+                    "capabilities": ["studio_scene_inspect_v1", "studio_bind_ids_v1"]}
         if command == "studio_scene_inspect_v1":
             if params["bind_missing_ids"]:
                 assert not read_only
@@ -149,3 +150,20 @@ def test_bind_requires_context_and_no_filter():
             validate_request({**base, **patch})
     with pytest.raises(ValidationError):
         validate_request({**base, "bind_missing_ids": False})
+
+def test_old_addon_with_inspect_only_cannot_receive_binding():
+    class Legacy(IdBindingBridge):
+        def __call__(self, command, params, read_only):
+            if command == "get_addon_info":
+                self.calls.append((command, params, read_only))
+                return {"protocol_version": 16, "capabilities": ["studio_scene_inspect_v1"]}
+            raise AssertionError("Legacy addon must not receive bind params")
+    bridge = Legacy()
+    data = {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+            "effect_scope": "scene", "scene_id": SCENE, "scene_revision": 1,
+            "idempotency_key": "bas08-bind", "bind_missing_ids": True}
+    response = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL)).invoke(
+        data, "studio_scene_inspect")
+    assert response["status"] == "failed"
+    assert response["error"]["code"] == "capability_unavailable"
+    assert [call[0] for call in bridge.calls] == ["get_addon_info"]

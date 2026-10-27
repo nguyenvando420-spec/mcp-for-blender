@@ -1845,7 +1845,9 @@ class BlenderMCPServer:
                 "drain_human_activity",
                 "get_telemetry_consent",
                 "set_telemetry_consent",
-            ] if self._allowed_command(name)[0]),
+            ] if self._allowed_command(name)[0]) + (
+                ["studio_bind_ids_v1"]
+                if self.profile in ("studio-local", "developer-local") else []),
             "blender_version": bpy.app.version_string,
             "premium_generators": premium_enabled_generators(),
         }
