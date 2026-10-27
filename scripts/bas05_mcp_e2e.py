@@ -291,6 +291,20 @@ def main():
         (output / "bas12-reopen.log").write_text(reopened.stdout + reopened.stderr)
         assert reopened.returncode == 0, reopened.stderr[-1000:]
         assert "BAS12_REOPEN_PASS" in reopened.stdout, reopened.stdout[-1000:]
+        # Also open the separately published output copy; this is the public
+        # studio_scene_save artifact, not an immutable internal snapshot path.
+        exported_scene = Path(record["bas12_save"]["path"])
+        export_checked = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(exported_scene), record["scene_id"],
+            str(record["bas12_restore"]["after_revision"]),
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-saved-export-reopen.log").write_text(
+            export_checked.stdout + export_checked.stderr)
+        assert export_checked.returncode == 0, export_checked.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in export_checked.stdout
+        record["bas12_save"]["reopen"] = "passed"
         record["bas12_snapshot"]["reopen"] = "passed"
         record["bas06_heartbeat"] = heartbeat
         record["passed"] = True
