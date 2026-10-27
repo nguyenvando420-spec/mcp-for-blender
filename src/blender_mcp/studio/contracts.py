@@ -254,12 +254,15 @@ class SceneSave(RequestBase):
     effect_scope: Literal[EffectScope.FILE]
     output_uri: Uri
     overwrite: bool = False
+    expected_sha256: Sha256 | None = None
     confirmation_token: NonEmpty | None = None
 
     @model_validator(mode="after")
     def overwrite_confirmation(self):
-        if self.overwrite and self.confirmation_token is None:
-            raise ValueError("overwrite requires confirmation_token")
+        if self.overwrite and (self.confirmation_token is None or self.expected_sha256 is None):
+            raise ValueError("overwrite requires confirmation_token and target checksum")
+        if not self.overwrite and (self.expected_sha256 is not None or self.confirmation_token is not None):
+            raise ValueError("non-overwrite save rejects confirmation and target checksum")
         return self
 
 

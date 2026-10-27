@@ -58,6 +58,31 @@ async def accept(port, record):
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as client:
             await client.initialize()
+            # Automated Blender GUI main-thread mutation/inspection, outside MCP.
+            async def bas12_golden_gui(action):
+                folder = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent
+                req = folder / "bas12-golden-edit.request.json"
+                ack = folder / "bas12-golden-edit.result.json"
+                ack.unlink(missing_ok=True)
+                req.write_text(json.dumps({"action": action}))
+                deadline = time.monotonic() + 15
+                while not ack.exists() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.1)
+                assert ack.exists(), "Blender golden GUI probe timed out"
+                result = json.loads(ack.read_text())
+                assert result.get("ok") is True, result
+                return result["state"]
+
+            def assert_golden(state):
+                assert abs(state["lens"] - 41.25) < 1e-4, state
+                for field, expected in (
+                    ("diffuse", (0.125, 0.25, 0.5, 1.0)),
+                    ("base_color", (0.125, 0.25, 0.5, 1.0)),
+                ):
+                    assert len(state[field]) == len(expected), state
+                    assert all(abs(x - y) < 1e-4 for x, y in zip(state[field], expected)), state
+                assert abs(state["metallic"] - 0.22) < 1e-4, state
+                assert abs(state["roughness"] - 0.41) < 1e-4, state
             toolset = {t.name for t in (await client.list_tools()).tools}
             assert {"studio_handshake", "studio_scene_inspect", "studio_create_object"} <= toolset
             assert "execute_blender_code" not in toolset
@@ -65,7 +90,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert handshake["operations"] == ["studio_create_object", "studio_scene_inspect"]
+            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot", "studio_scene_restore", "studio_scene_save"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
@@ -134,6 +159,190 @@ async def accept(port, record):
                 "elapsed_seconds": round(time.monotonic() - stress_started, 3),
                 "last_revision": rev + 51,
             }
+            # BAS-12: immutable sandboxed .blend copy created by real GUI bpy,
+            # verified and replayed without creating a second snapshot.
+            initial_golden = await bas12_golden_gui("inspect")
+            assert_golden(initial_golden)
+            record["bas12_golden_expected"] = initial_golden
+            sandbox_request = {
+                "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid,
+                "scene_revision": rev + 51,
+                "idempotency_key": "bas12-gui-snapshot", "label": "golden-e2e",
+            }
+            snap = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": sandbox_request}))
+            assert snap["status"] == "succeeded", snap
+            snapshot_id = snap["result"]["snapshot_id"]
+            assert snap["scene_revision"] == rev + 51, snap
+            reissued = unpack(await client.call_tool(
+                "studio_scene_snapshot",
+                {"request": {**sandbox_request, "request_id": str(uuid4())}}))
+            assert reissued["status"] == "succeeded", reissued
+            assert reissued["result"]["snapshot_id"] == snapshot_id, reissued
+            manifest_path = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / ".bas12-snapshots" / snapshot_id / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            scene_copy = manifest_path.parent / "scene.blend"
+            assert manifest["scene_id"] == sid
+            assert manifest["scene_revision"] == rev + 51
+            assert manifest["sha256"] == hashlib.sha256(scene_copy.read_bytes()).hexdigest()
+            # Mutate material nodes and camera lens in Blender GUI outside MCP.
+            # A successful restore must revert ALL these exact values.
+            mutated = await bas12_golden_gui("mutate")
+            assert abs(mutated["lens"] - 92.75) < 1e-4, mutated
+            assert abs(mutated["roughness"] - 0.95) < 1e-4, mutated
+            assert mutated["revision"] == rev + 51
+            record["bas12_golden_mutated"] = mutated
+            # Mutate then restore with a one-shot trusted acceptance token.
+            mutation = {
+                "operation": "studio_create_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": sid,
+                "scene_revision": rev + 51, "idempotency_key": "bas12-restore-probe",
+                "name": "BAS12_Throwaway",
+                "spec": {"kind": "primitive", "primitive": "cube"},
+            }
+            added = unpack(await client.call_tool("studio_create_object",
+                                                   {"request": mutation}))
+            assert added["status"] == "succeeded", added
+            from blender_mcp.security_policy import issue_confirmation
+            secret = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            confirm = issue_confirmation(
+                secret, operation="studio_scene_restore", scene_id=sid,
+                scene_revision=rev + 52, snapshot_id=snapshot_id)
+            restored = unpack(await client.call_tool("studio_scene_restore", {"request": {
+                "operation": "studio_scene_restore", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 52,
+                "idempotency_key": "bas12-restore-case", "snapshot_id": snapshot_id,
+                "confirmation_token": confirm}}))
+            assert restored["status"] == "succeeded", restored
+            assert restored["scene_revision"] == rev + 53, restored
+            restored_inspect = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 100}}))
+            assert restored_inspect["scene_revision"] == rev + 53
+            restored_objects = json.loads(restored_inspect["result"]["summary"])["objects"]
+            assert not any(item["name"] == "BAS12_Throwaway" for item in restored_objects)
+            assert any(item["object_id"] == oid for item in restored_objects)
+            assert restored["result"]["snapshot_id"] != snapshot_id  # pre-restore backup ID
+            recovered_golden = await bas12_golden_gui("inspect")
+            assert_golden(recovered_golden)
+            assert recovered_golden["revision"] == rev + 53
+            assert recovered_golden["scene_id"] == sid
+            record["bas12_golden_restored"] = recovered_golden
+            record["bas12_golden_comparison"] = "exact fields (float tolerance 1e-4) PASS"
+            # BAS-12 non-overwrite save is an atomic copy, not a hardlink
+            # to the immutable snapshot. Both file and snapshot survive.
+            destination = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / "bas12-export.blend"
+            saved_scene = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-export", "output_uri": destination.as_uri()}}))
+            assert saved_scene["status"] == "succeeded", saved_scene
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            assert saved_scene["scene_revision"] == rev + 53
+            record["bas12_save"] = {
+                "path": str(destination),
+                "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "snapshot_id": saved_scene["result"]["snapshot_id"],
+                "overwrite_disabled": True,
+            }
+            # Overwrite requires the pre-existing file SHA and a separate
+            # resource-bound trusted confirmation, never plain save permission.
+            from blender_mcp.security_policy import issue_resource_confirmation
+            old_hash = hashlib.sha256(destination.read_bytes()).hexdigest()
+            overwrite_token = issue_resource_confirmation(
+                secret, operation="studio_scene_save", scene_id=sid,
+                scene_revision=rev + 53, resource=destination.as_uri() + "|" + old_hash)
+            replaced = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replaced["status"] == "succeeded", replaced
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            replay_overwrite = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-overwrite", "output_uri": destination.as_uri(),
+                "overwrite": True, "expected_sha256": old_hash,
+                "confirmation_token": overwrite_token}}))
+            assert replay_overwrite["status"] == "failed", replay_overwrite
+            record["bas12_overwrite"] = {
+                "approved_sha256": old_hash,
+                "new_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "backup_available": True, "replay_denied": True,
+            }
+            # Open is an in-process scene import, keeping the addon socket
+            # alive and returning a NEW scene UUID to force client resync.
+            original_snapshot = unpack(await client.call_tool(
+                "studio_scene_snapshot", {"request": {
+                    "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
+                    "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                    "idempotency_key": "bas12-open-prior", "label": "pre-open"}}))
+            assert original_snapshot["status"] == "succeeded", original_snapshot
+            prior_id = original_snapshot["result"]["snapshot_id"]
+            file_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+            token_open = issue_resource_confirmation(
+                secret, operation="studio_scene_open", scene_id=sid,
+                scene_revision=rev + 53, snapshot_id=prior_id,
+                resource=destination.as_uri() + "|" + file_sha)
+            opened = unpack(await client.call_tool("studio_scene_open", {"request": {
+                "operation": "studio_scene_open", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-open-e2e", "input_uri": destination.as_uri(),
+                "expected_sha256": file_sha, "snapshot_id": prior_id,
+                "confirmation_token": token_open}}))
+            assert opened["status"] == "succeeded", opened
+            assert opened["scene_id"] != sid and opened["scene_revision"] == rev + 54
+            new_context = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "limit": 200}}))
+            assert new_context["status"] == "succeeded", new_context
+            assert new_context["scene_id"] == opened["scene_id"]
+            assert new_context["scene_revision"] == rev + 54
+            assert any(item["object_id"] == oid for item in
+                       json.loads(new_context["result"]["summary"])["objects"])
+            opened_golden = await bas12_golden_gui("inspect")
+            assert_golden(opened_golden)
+            assert opened_golden["scene_id"] == opened["scene_id"]
+            # Old scene commands must be rejected after import even if their
+            # revision happened to be numerically valid before the switch.
+            old_scene_request = {
+                "operation": "studio_create_object", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": sid,
+                "scene_revision": rev + 53, "idempotency_key": "bas12-stale-after-open",
+                "name": "MUST_NOT_CREATE", "spec": {"kind": "primitive", "primitive": "cube"},
+            }
+            stale_after_open = unpack(await client.call_tool(
+                "studio_create_object", {"request": old_scene_request}))
+            assert stale_after_open["status"] == "failed", stale_after_open
+            assert stale_after_open["error"]["code"] == "stale_scene", stale_after_open
+            live_after_open = unpack(await client.call_tool(
+                "studio_scene_inspect", {"request": {
+                    "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                    "effect_scope": "read", "limit": 200}}))
+            assert live_after_open["scene_id"] == opened["scene_id"]
+            assert not any(x["name"] == "MUST_NOT_CREATE" for x in
+                           json.loads(live_after_open["result"]["summary"])["objects"])
+            record["bas12_reconnect"] = {
+                "stdio_reused": True, "new_scene_id": opened["scene_id"],
+                "old_scene_rejected": True, "post_open_inspect_passed": True,
+                "load_handler_semantics": "in-session import only; not open_mainfile"}
+            record["bas12_open"] = {
+                "old_scene_id": sid, "new_scene_id": opened["scene_id"],
+                "old_revision": rev + 53, "new_revision": rev + 54,
+                "socket_kept_alive": True, "checksum": file_sha,
+            }
+            record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
+                                       "after_revision": rev + 53,
+                                       "backup_id": restored["result"]["snapshot_id"]}
+            record["bas12_snapshot"] = {
+                "snapshot_id": snapshot_id, "sha256": manifest["sha256"],
+                "bytes": manifest["bytes"], "replay": True,
+                "path": str(scene_copy), "manifest": str(manifest_path),
+                "scene_revision": manifest["scene_revision"],
+            }
             record.update({"handshake": handshake, "scene_id": sid,
                            "initial_revision": rev, "new_revision": made["scene_revision"],
                            "object_id": oid, "object_name": "BAS05_Cube",
@@ -149,6 +358,11 @@ def main():
     args = ap.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    studio_root = output / "studio-sandbox"
+    studio_root.mkdir(mode=0o700, exist_ok=True)
+    studio_root.chmod(0o700)
+    os.environ["BLENDER_MCP_STUDIO_ROOT"] = str(studio_root)
+    os.environ["BLENDER_MCP_CONFIRM_SECRET"] = secrets.token_urlsafe(32)
     spec = json.loads((ROOT / "blender-runtime.json").read_text())
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     blender = ROOT / ".blender-runtime" / "runtime" / spec["artifacts"]["Linux-x86_64"]["executable"]
@@ -194,6 +408,33 @@ def main():
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat
+        # Reopen the saved snapshot in a separate headless Blender process so
+        # the interactive user scene cannot be destroyed by acceptance tests.
+        snapshot = Path(record["bas12_snapshot"]["path"])
+        reopen_script = ROOT / "scripts" / "bas12_snapshot_reopen.py"
+        reopened = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(snapshot), record["scene_id"], str(record["bas12_snapshot"]["scene_revision"])
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-reopen.log").write_text(reopened.stdout + reopened.stderr)
+        assert reopened.returncode == 0, reopened.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in reopened.stdout, reopened.stdout[-1000:]
+        # Also open the separately published output copy; this is the public
+        # studio_scene_save artifact, not an immutable internal snapshot path.
+        exported_scene = Path(record["bas12_save"]["path"])
+        export_checked = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python", str(reopen_script),
+            "--", str(exported_scene), record["scene_id"],
+            str(record["bas12_restore"]["after_revision"]),
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas12-saved-export-reopen.log").write_text(
+            export_checked.stdout + export_checked.stderr)
+        assert export_checked.returncode == 0, export_checked.stderr[-1000:]
+        assert "BAS12_REOPEN_PASS" in export_checked.stdout
+        record["bas12_save"]["reopen"] = "passed"
+        record["bas12_snapshot"]["reopen"] = "passed"
         record["bas06_heartbeat"] = heartbeat
         record["passed"] = True
         (output / "bas05-e2e.json").write_text(json.dumps(record, indent=2) + "\n")
