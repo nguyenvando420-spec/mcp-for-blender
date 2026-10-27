@@ -110,3 +110,38 @@ def test_delete_no_preview_or_wrong_target_never_mutates(ctx):
                                      confirmation_token=token2), "studio_delete_object")
     assert wrong["status"] == "failed"
     assert not bridge.deleted
+
+
+
+def test_unknown_transport_after_delete_reports_recovery_checkpoint(ctx):
+    gateway, bridge, root, sid, oid = ctx
+    original = bridge.__call__
+
+    # Keep the real fake's bound entrypoint but simulate a lost socket reply
+    # after the target has already been removed in Blender.
+    def flaky(cmd, params, read_only):
+        if cmd == "studio_delete_object_v1":
+            bridge.calls.append((cmd, params))
+            bridge.deleted = True
+            raise TimeoutError("Disconnected after side effect")
+        return original(cmd, params, read_only)
+
+    gateway.bridge = flaky
+    preview = gateway.invoke(envelope("studio_scene_snapshot", sid, 3, "fault-preview",
+                                      scope="file"), "studio_scene_snapshot")
+    ident = preview["result"]["snapshot_id"]
+    token = issue_resource_confirmation(
+        SECRET, operation="studio_delete_object", scene_id=sid,
+        scene_revision=3, snapshot_id=ident, resource=oid)
+    request = envelope("studio_delete_object", sid, 3, "fault-delete",
+                       object_id=oid, snapshot_id=ident, confirmation_token=token)
+    failed = gateway.invoke(request, "studio_delete_object")
+    assert failed["status"] == "failed"
+    details = failed["error"]["details"]
+    assert details["may_have_partial_effects"] is True
+    assert SnapshotStore(root).verify(details["pre_delete_snapshot_id"]).scene_revision == 3
+    # The spent token cannot be replayed to delete twice.
+    again = gateway.invoke({**request, "request_id": str(uuid4())},
+                           "studio_delete_object")
+    assert again["status"] == "failed"
+    assert [x[0] for x in bridge.calls].count("studio_delete_object_v1") == 1
