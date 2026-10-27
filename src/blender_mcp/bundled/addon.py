@@ -1490,7 +1490,9 @@ class BlenderMCPServer:
         if cmd_type in self.READ_COMMANDS:
             return True, ""
         if self.profile == "studio-local" and (cmd_type == "studio_create_object_v1" or
-                (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT"))):
+                (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")) or
+                (cmd_type == "studio_scene_restore_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")
+                 and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32)):
             return True, ""
         return False, "permission_denied"
 
@@ -1703,6 +1705,7 @@ class BlenderMCPServer:
             "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
             "studio_create_object_v1": self.studio_create_object_v1,
             "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
+            "studio_scene_restore_v1": self.studio_scene_restore_v1,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1813,6 +1816,7 @@ class BlenderMCPServer:
                 "studio_scene_inspect_v1",
                 "studio_create_object_v1",
                 "studio_scene_snapshot_v1",
+                "studio_scene_restore_v1",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -1962,6 +1966,149 @@ class BlenderMCPServer:
         return {"scene_id": current_id, "scene_revision": revision,
                 "snapshot_id": str(uuid.UUID(snapshot_id)),
                 "sha256": sha.hexdigest(), "bytes": count}
+
+    def _bas12_read_snapshot(self, snapshot_id, path, expected_sha256):
+        """Verify known UUID path, manifest and content before any scene import."""
+        from pathlib import Path
+        try:
+            root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+            sid = str(uuid.UUID(snapshot_id))
+            target = Path(path)
+            if (not root.is_absolute() or root.is_symlink()
+                    or root.resolve(strict=True) != root
+                    or root.stat().st_mode & 0o022
+                    or target.relative_to(root).parts !=
+                    (".bas12-snapshots", sid, "scene.blend")):
+                raise ValueError("unsafe path")
+            cursor = root
+            for part in (".bas12-snapshots", sid):
+                cursor = cursor / part
+                if cursor.is_symlink() or not cursor.is_dir() or cursor.stat().st_mode & 0o077:
+                    raise ValueError("unsafe directory")
+            if target.is_symlink() or not target.is_file():
+                raise ValueError("missing or symbolic link")
+            manifest_path = target.parent / "manifest.json"
+            if manifest_path.is_symlink():
+                raise ValueError("linked manifest")
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            if (manifest["snapshot_id"] != sid or manifest["file"] != "scene.blend"
+                    or manifest["sha256"] != expected_sha256 or len(expected_sha256) != 64):
+                raise ValueError("manifest mismatch")
+            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                digest = hashlib.sha256()
+                with os.fdopen(os.dup(fd), "rb") as handle:
+                    while True:
+                        chunk = handle.read(1048576)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                if digest.hexdigest() != expected_sha256:
+                    raise ValueError("checksum mismatch")
+                if os.fstat(fd).st_size != manifest["bytes"]:
+                    raise ValueError("size mismatch")
+            finally:
+                os.close(fd)
+            return target, manifest
+        except (OSError, TypeError, ValueError, KeyError, FileNotFoundError):
+            raise ValueError("conflict: snapshot validation failed")
+
+    def _bas12_authorize_confirm(self, token, scene_id, revision, snapshot_id):
+        """Independent add-on confirmation validation; no model-facing issuer."""
+        import struct
+        import binascii
+        secret = os.getenv("BLENDER_MCP_CONFIRM_SECRET", "").encode()
+        if len(secret) < 32 or not isinstance(token, str) or len(token) > 256:
+            raise ValueError("permission_denied: confirmation key unavailable")
+        fmt = struct.Struct("!B16sQ16sQ16s")
+        try:
+            raw = base64.b64decode(token + "=" * (-len(token) % 4),
+                                   altchars=b"-_", validate=True)
+            if len(raw) != fmt.size + 32:
+                raise ValueError("token length")
+            payload, signature = raw[:-32], raw[-32:]
+            if not hmac.compare_digest(hmac.new(secret, payload, hashlib.sha256).digest(),
+                                       signature):
+                raise ValueError("signature mismatch")
+            code, scene, rev, snapshot, expiration, nonce = fmt.unpack(payload)
+            now = int(time.time())
+            if (code != 2 or scene != uuid.UUID(scene_id).bytes
+                    or rev != revision or snapshot != uuid.UUID(snapshot_id).bytes
+                    or not now < expiration <= now + 300 or not any(nonce)):
+                raise ValueError("token is stale or mismatched")
+            return nonce.hex()
+        except (TypeError, ValueError, binascii.Error, struct.error):
+            raise ValueError("permission_denied: confirmation failed")
+
+    def _bas12_consume_confirmation(self, nonce):
+        from pathlib import Path
+        root = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+        folder = root / ".bas12-consumed-confirmations"
+        folder.mkdir(mode=0o700, exist_ok=True)
+        if folder.is_symlink() or not folder.is_dir() or folder.stat().st_mode & 0o077:
+            raise ValueError("permission_denied: unsafe nonce journal")
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(folder / nonce, flags, 0o600)
+            try:
+                os.write(fd, b"spent\n")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            raise ValueError("permission_denied: already consumed confirmation")
+
+    def studio_scene_restore_v1(self, scene_id, scene_revision, snapshot_id,
+                                path, sha256, confirmation_token,
+                                backup_snapshot_id):
+        """Switch scene to checked library copy without unloading the socket addon.
+
+        Unlike bpy.ops.wm.open_mainfile, this imports the saved scene and makes
+        one pointer swap, retaining the previous scene for emergency rollback.
+        """
+        scene, current_id, revision = self._studio_scene_context_v1()
+        if scene_id != current_id or type(scene_revision) is not int or scene_revision != revision:
+            raise ValueError("stale_scene: scene UUID/revision mismatch")
+        nonce = self._bas12_authorize_confirm(confirmation_token, current_id,
+                                               revision, snapshot_id)
+        # Confirm the backup exists and is for exactly the current revision.
+        backup_path = (os.path.join(os.environ["BLENDER_MCP_STUDIO_ROOT"],
+                       ".bas12-snapshots", str(uuid.UUID(backup_snapshot_id)), "scene.blend"))
+        with open(os.path.join(os.path.dirname(backup_path), "manifest.json"),
+                  encoding="utf-8") as stream:
+            backup_manifest = json.load(stream)
+        self._bas12_read_snapshot(backup_snapshot_id, backup_path,
+                                  backup_manifest["sha256"])
+        if backup_manifest["scene_id"] != current_id or backup_manifest["scene_revision"] != revision:
+            raise ValueError("conflict: backup belongs to another scene")
+        source, manifest = self._bas12_read_snapshot(snapshot_id, path, sha256)
+        if manifest["scene_id"] != current_id:
+            raise ValueError("conflict: snapshot belongs to another scene")
+        with bpy.data.libraries.load(str(source), link=False) as (available, imported):
+            imported.scenes = list(available.scenes)
+        target = next((candidate for candidate in imported.scenes
+                       if candidate and candidate.get("_bas05_scene_id") == current_id), None)
+        if target is None:
+            raise ValueError("conflict: snapshot has no matching Blender scene")
+        if bpy.context.window is None:
+            raise ValueError("conflict: no interactive Blender window")
+        # Consume before the scene pointer change. If this fails, no current
+        # scene changes. A crash after consumption returns UNKNOWN, no replay.
+        self._bas12_consume_confirmation(nonce)
+        original = bpy.context.window.scene
+        try:
+            target["_bas05_scene_revision"] = revision + 1
+            target["_bas12_restore_source"] = snapshot_id
+            bpy.context.window.scene = target
+        except Exception:
+            try:
+                bpy.context.window.scene = original
+            except Exception:
+                pass
+            raise ValueError("conflict: restore failed, original retained where possible")
+        return {"scene_id": current_id, "scene_revision": revision + 1,
+                "restored_snapshot_id": snapshot_id, "pre_restore_snapshot_id": backup_snapshot_id}
 
     def get_scene_info(self):
         """Get information about the current Blender scene"""
