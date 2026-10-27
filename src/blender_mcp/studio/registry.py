@@ -200,7 +200,7 @@ class StudioGateway:
                             idempotency_key="pre-restore:" + req.idempotency_key)
                         if saved.get("sha256") != backup.sha256:
                             raise SnapshotError("Backup checksum mismatch")
-                    self.bridge(HANDLERS[req.operation], {
+                    restored_reply = self.bridge(HANDLERS[req.operation], {
                         "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
                         "snapshot_id": source.snapshot_id,
                         "path": str(source.path), "sha256": source.sha256,
@@ -208,6 +208,11 @@ class StudioGateway:
                         "backup_snapshot_id": backup_id}, False)
                     # Addon switches the active scene to a verified library
                     # copy and increments the current revision.
+                    if (restored_reply.get("scene_id") != str(req.scene_id)
+                            or restored_reply.get("scene_revision") != req.scene_revision + 1
+                            or restored_reply.get("restored_snapshot_id") != source.snapshot_id
+                            or restored_reply.get("pre_restore_snapshot_id") != backup_id):
+                        raise SnapshotError("Restore reply unverified; state unknown")
                     reply = {"scene_id": str(req.scene_id),
                              "scene_revision": req.scene_revision + 1}
                     result = ResultPayload(
