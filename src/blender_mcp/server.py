@@ -2335,11 +2335,16 @@ mcp._mcp_server.read_resource()(_read_resource_for_profile)
 def _studio_gateway():
     from .studio.registry import StudioGateway
     from .security_policy import Policy
+    from pathlib import Path
 
     def _bridge(command, params, read_only):
         return get_blender_connection().send_command(command, params, read_only=read_only)
 
-    return StudioGateway(_bridge, Policy(profile_from_env()))
+    configured_root = os.getenv("BLENDER_MCP_STUDIO_ROOT")
+    roots = (Path(configured_root),) if configured_root else ()
+    return StudioGateway(_bridge, Policy(profile_from_env(),
+                                         read_roots=roots, write_roots=roots),
+                         confirmation_secret=os.getenv("BLENDER_MCP_CONFIRM_SECRET", "").encode() or None)
 
 
 @mcp.tool()
@@ -2360,16 +2365,44 @@ def studio_create_object(request: dict) -> dict:
     return _studio_gateway().invoke(request, "studio_create_object")
 
 @mcp.tool()
+def studio_scene_snapshot(request: dict) -> dict:
+    """Save an immutable BLEND copy into the configured BAS-12 sandbox."""
+    return _studio_gateway().invoke(request, "studio_scene_snapshot")
+
+
+@mcp.tool()
+def studio_scene_restore(request: dict) -> dict:
+    """Restore a verified snapshot with pre-restore backup and trusted confirmation."""
+    return _studio_gateway().invoke(request, "studio_scene_restore")
+
+
+@mcp.tool()
+def studio_scene_open(request: dict) -> dict:
+    """Open a verified sandbox BLEND with signed consent and backup."""
+    return _studio_gateway().invoke(request, "studio_scene_open")
+
+
+@mcp.tool()
+def studio_scene_save(request: dict) -> dict:
+    """Publish a fresh BLEND copy into the authorized root without overwrite."""
+    return _studio_gateway().invoke(request, "studio_scene_save")
+
+@mcp.tool()
 def studio_set_transform(request: dict) -> dict:
-    """Typed transform, rename, duplicate by UUID with bounded values."""
+    """Typed transform/rename/duplicate by stable object UUID."""
     return _studio_gateway().invoke(request, "studio_set_transform")
 
 
 @mcp.tool()
 def studio_manage_collection(request: dict) -> dict:
-    """Typed collection create, rename and object move by UUID."""
+    """Create, rename and move objects between Blender collections."""
     return _studio_gateway().invoke(request, "studio_manage_collection")
 
+
+@mcp.tool()
+def studio_delete_object(request: dict) -> dict:
+    """Delete only with bound confirmation and verified pre-delete snapshots."""
+    return _studio_gateway().invoke(request, "studio_delete_object")
 
 
 # Main execution
