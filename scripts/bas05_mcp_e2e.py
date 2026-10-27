@@ -233,7 +233,7 @@ async def accept(port, record):
             mutation = {
                 "operation": "studio_create_object", "request_id": str(uuid4()),
                 "effect_scope": "scene", "scene_id": sid,
-                "scene_revision": rev + 51, "idempotency_key": "bas12-restore-probe",
+                "scene_revision": rev + 52, "idempotency_key": "bas12-restore-probe",
                 "name": "BAS12_Throwaway",
                 "spec": {"kind": "primitive", "primitive": "cube"},
             }
