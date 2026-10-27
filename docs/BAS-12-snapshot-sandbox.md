@@ -17,11 +17,30 @@ Spec: https://app.notion.com/p/40515de298eb815e9c26f1045b8fe1a6
 
 Set `BLENDER_MCP_STUDIO_ROOT` to an existing canonical, private directory (mode 0700); add-on and MCP must share filesystem and setting. For restore, additionally provide a securely shared 32+ byte `BLENDER_MCP_CONFIRM_SECRET` environment secret and issue signed confirmation from a trusted UI/backend only. No file operation is advertised to observer. Not a sandbox for developer-local arbitrary Python.
 
-## Not yet implemented / acceptance blockers
+## Guarded file operations and remaining limitations
 
-The task is **not Done** until confirmed overwrite authorization/backup, open-mainfile load-handler reconnect (or documented equivalent), failure rollback under injected faults and deletion/overwrite in BAS-07 are verified. `studio_scene_restore` has a guarded implementation but is **not yet runtime-accepted**. `studio_scene_open` and overwrite are intentionally NOT exposed until those gates are satisfied. No model-facing confirmation issuer exists: a trusted UI/backend must explicitly issue a token using BAS-04's signed confirmation protocol. Manual end-user restore UX is deferred.
-
-Main-thread work can still block on very large .blend serialization. GUI/Xvfb and independent human desktop review remain separate. Verify full Actions CI on the actual reviewed head before merge.
+- `studio_scene_save` now supports an existing BLEND destination only after
+  a trusted resource-bound HMAC confirmation containing the exact canonical
+  output URI and approved previous SHA-256. The gateway backs up the prior file
+  in an immutable snapshot before using same-directory atomic replacement.
+  Confirmation replay is denied. A root-local non-cooperating writer could still
+  race a replacement; sandbox roots MUST be private single-writer workspaces.
+- `studio_scene_open` verifies the allowed input path/checksum and a separate
+  resource-bound confirmation. It requires a same-revision preview snapshot,
+  saves a second pre-open snapshot, imports the file's scene into the existing
+  GUI Blender process and returns a **new scene UUID and revision**. This avoids
+  unloading socket handlers, but it does not provide full Blender UI/load-handler
+  semantics of `bpy.ops.wm.open_mainfile`. It is a deliberate in-session import.
+- Confirmation issuer APIs in `security_policy.py` are trusted-backend
+  utilities; there is NO model-facing token issuing MCP tool. A trusted user
+  interface must display the resource/path/checksum and require user approval.
+- Both operations use conservative unknown-state and one-time confirmation
+  semantics. Retry after uncertain mutation requires human reconciliation;
+  no distributed transaction guarantee is claimed.
+- No tests on Windows, macOS, GPU rendering or a human interactive desktop
+  are claimed. Linux/POSIX `dir_fd` and `O_NOFOLLOW` are explicit requirements.
+- BAS-07's confirmed delete/recovery is implemented on separate draft PR #7;
+  acceptance of both needs matching integration evidence and final-head review.
 
 ## Test commands
 
