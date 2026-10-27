@@ -171,6 +171,62 @@ def _bas07_direct_gui_edit():
 bpy.app.timers.register(_bas07_direct_gui_edit, first_interval=0.05)
 
 
+# BAS-08 negative GUI E2E: switch to disposable empty scene and temporarily
+# remove viewport editors. All changes are restored before shutdown.
+_bas08_restore_scene = None
+_bas08_empty_scene = None
+_bas08_viewport_areas = []
+
+def _bas08_negative_probe():
+    global _bas08_restore_scene, _bas08_empty_scene
+    request_path = output_dir / "bas08-negative.request.json"
+    if not request_path.is_file():
+        return 0.05
+    answer_path = output_dir / "bas08-negative.result.json"
+    try:
+        request = json.loads(request_path.read_text())
+        request_path.unlink()
+        action = request["action"]
+        if action == "empty":
+            if _bas08_restore_scene is not None:
+                raise RuntimeError("Empty scene already active")
+            _bas08_restore_scene = bpy.context.window.scene
+            _bas08_empty_scene = bpy.data.scenes.new("BAS08_EmptyScene")
+            bpy.context.window.scene = _bas08_empty_scene
+        elif action == "hide_viewport":
+            if _bas08_viewport_areas:
+                raise RuntimeError("Viewport already hidden")
+            areas = [area for area in bpy.context.screen.areas if area.type == "VIEW_3D"]
+            if not areas:
+                raise RuntimeError("No VIEW_3D area to hide")
+            for area in areas:
+                area.type = "CONSOLE"
+                _bas08_viewport_areas.append(area)
+        elif action == "restore":
+            for area in _bas08_viewport_areas:
+                area.type = "VIEW_3D"
+            _bas08_viewport_areas.clear()
+            if _bas08_restore_scene is not None:
+                bpy.context.window.scene = _bas08_restore_scene
+                _bas08_restore_scene = None
+            if _bas08_empty_scene is not None:
+                bpy.data.scenes.remove(_bas08_empty_scene)
+                _bas08_empty_scene = None
+        else:
+            raise ValueError("Unknown BAS-08 probe action")
+        answer_path.write_text(json.dumps({"ok": True, "action": action,
+                                           "scene": bpy.context.scene.name,
+                                           "camera": bpy.context.scene.camera.name
+                                           if bpy.context.scene.camera else None,
+                                           "objects": len(bpy.context.scene.objects)}))
+    except Exception as exc:
+        answer_path.write_text(json.dumps({"ok": False, "error": type(exc).__name__,
+                                           "message": str(exc)}))
+    return 0.05
+
+bpy.app.timers.register(_bas08_negative_probe, first_interval=0.05)
+
+
 def finish_when_requested():
     if not done_file.exists():
         return 0.2
