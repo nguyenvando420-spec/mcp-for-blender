@@ -1215,6 +1215,7 @@ class BlenderMCPServer:
     DRAIN_SECONDS = 0.010
     READ_COMMANDS = frozenset({
         "ping", "get_addon_info", "get_scene_info", "studio_scene_inspect_v1",
+        "studio_capture_viewport_v1",
         "get_object_info", "list_scene_items", "get_world_state_snapshot",
         "get_telemetry_consent", "get_request_status",
     })
@@ -1706,6 +1707,7 @@ class BlenderMCPServer:
         handlers = {
             "get_scene_info": self.get_scene_info,
             "studio_scene_inspect_v1": self.studio_scene_inspect_v1,
+            "studio_capture_viewport_v1": self.studio_capture_viewport_v1,
             "studio_create_object_v1": self.studio_create_object_v1,
             "studio_create_text_v1": self.studio_create_text_v1,
             "studio_set_transform_v1": self.studio_set_transform_v1,
@@ -1822,6 +1824,7 @@ class BlenderMCPServer:
             "capabilities": sorted(name for name in [
                 "get_scene_info",
                 "studio_scene_inspect_v1",
+                "studio_capture_viewport_v1",
                 "studio_create_object_v1",
                 "studio_create_text_v1",
                 "studio_set_transform_v1",
@@ -1842,37 +1845,338 @@ class BlenderMCPServer:
                 "drain_human_activity",
                 "get_telemetry_consent",
                 "set_telemetry_consent",
-            ] if self._allowed_command(name)[0]),
+            ] if self._allowed_command(name)[0]) + (
+                ["studio_bind_ids_v1"]
+                if self.profile in ("studio-local", "developer-local") else []),
             "blender_version": bpy.app.version_string,
             "premium_generators": premium_enabled_generators(),
         }
 
 
+    # BAS-08: conservative, revision-bound observation. These are Blender main
+    # thread operations only; no arbitrary bpy code enters through the socket.
+    @staticmethod
+    def _bas08_fingerprint(scene):
+        """Use BAS-07's verified content digest, plus selection and time.
+
+        This does not claim to detect every driver/modifier/animation change.
+        Oversized scenes fail closed rather than claim a fresh revision.
+        """
+        base = BlenderMCPServer._bas07_scene_fingerprint(scene)
+        selected = sorted(obj.name_full for obj in bpy.context.selected_objects
+                          if obj.name in scene.objects)
+        active = bpy.context.view_layer.objects.active
+        fields = [base, scene.frame_current, selected,
+                  active.name_full if active and active.name in scene.objects else None]
+        return hashlib.sha256(json.dumps(fields, ensure_ascii=False,
+                            separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def _bas08_mark_commit(self, scene):
+        self._bas08_marker = (
+            str(scene.get("_bas05_scene_id")),
+            int(scene.get("_bas05_scene_revision", 0)),
+            self._bas08_fingerprint(scene),
+        )
+
     def _studio_scene_context_v1(self):
-        """Provisional scene revision source; BAS-08 will track user edits too."""
+        """Track GUI changes even when they bypass BAS-05/BAS-07 commands."""
         scene = bpy.context.scene
         scene_id = scene.get("_bas05_scene_id")
         try:
-            uuid.UUID(str(scene_id))
+            scene_id = str(uuid.UUID(str(scene_id)))
         except (TypeError, ValueError, AttributeError):
             scene_id = str(uuid.uuid4())
             scene["_bas05_scene_id"] = scene_id
         revision = int(scene.get("_bas05_scene_revision", 0))
-        return scene, str(scene_id), revision
+        try:
+            fingerprint = self._bas08_fingerprint(scene)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError("capability_unavailable: scene exceeds tracked observation scope") from exc
+        previous = getattr(self, "_bas08_marker", None)
+        if previous is not None and previous[:2] == (scene_id, revision):
+            if previous[2] != fingerprint:
+                revision += 1
+                scene["_bas05_scene_revision"] = revision
+                # Old idempotency replies are invalid after an external GUI edit.
+                scene["_bas05_idempotency_cache"] = "{}"
+        self._bas08_marker = (scene_id, revision, fingerprint)
+        return scene, scene_id, revision
 
-    def studio_scene_inspect_v1(self, query="", limit=20):
-        """Never use a Python/script bridge for Studio observation."""
+    @staticmethod
+    def _bas08_uuid(value):
+        try:
+            return str(uuid.UUID(str(value)))
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _bas08_bind_ids(self, scene, sid, revision, idempotency_key):
+        """Explicit local metadata binding with preflight and rollback."""
+        if self.profile not in ("studio-local", "developer-local"):
+            raise ValueError("permission_denied: bind IDs requires local editor")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 256:
+            raise ValueError("invalid_input: missing ID binding idempotency key")
+        cache = json.loads(scene.get("_bas05_idempotency_cache", "{}"))
+        normalized = json.dumps(["bind_missing_ids", sid, revision], separators=(",", ":"))
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if idempotency_key in cache:
+            saved = cache[idempotency_key]
+            if saved["digest"] != digest:
+                raise ValueError("conflict: ID binding idempotency key reused")
+            return dict(saved["reply"], replayed=True)
+        objects = sorted(scene.objects, key=lambda o: o.name_full)
+        if len(objects) > 2500:
+            raise ValueError("capability_unavailable: too many objects for stable ID binding")
+        cols = sorted([scene.collection, *scene.collection.children_recursive],
+                      key=lambda c: c.name_full)
+        materials = sorted({slot.material for obj in objects
+                            for slot in obj.material_slots if slot.material},
+                           key=lambda m: m.name_full)
+        if len(cols) > 2500 or len(materials) > 2500:
+            raise ValueError("capability_unavailable: too many datablocks for ID binding")
+        operations = []
+        for blocks, key in ((objects, "_bas05_object_id"),
+                            (cols, "_bas07_collection_id"),
+                            (materials, "_bas08_material_id")):
+            seen = set()
+            for block in blocks:
+                old = block.get(key)
+                stable = self._bas08_uuid(old)
+                if stable and stable not in seen:
+                    seen.add(stable)
+                    continue
+                if block.library is not None:
+                    raise ValueError(
+                        "capability_unavailable: make linked datablocks local before binding IDs")
+                new = str(uuid.uuid4())
+                while new in seen:
+                    new = str(uuid.uuid4())
+                operations.append((block, key, old, new))
+                seen.add(new)
+        written = []
+        try:
+            for block, key, old, new in operations:
+                block[key] = new
+                written.append((block, key, old))
+        except Exception:
+            for block, key, old in reversed(written):
+                try:
+                    if old is None:
+                        del block[key]
+                    else:
+                        block[key] = old
+                except Exception:
+                    raise ValueError("conflict: partial ID assignment, restore scene snapshot")
+            raise
+        if operations:
+            scene["_bas05_scene_revision"] = revision + 1
+            self._bas08_mark_commit(scene)
+        reply = {"scene_id": sid, "scene_revision": revision + int(bool(operations)),
+                 "ids_bound": len(operations)}
+        cache[idempotency_key] = {"digest": digest, "reply": reply}
+        if len(cache) > 128:
+            cache.pop(next(iter(cache)))
+        scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        return reply
+
+    def studio_scene_inspect_v1(self, query="", limit=20, offset=0, object_id=None,
+                                bind_missing_ids=False, scene_id=None,
+                                scene_revision=None, idempotency_key=None):
+        """Paged inspect, with optional explicit scene-scoped ID binding."""
         if not isinstance(query, str) or len(query) > 4096:
-            raise ValueError("invalid_input: invalid scene query")
+            raise ValueError("invalid_input: scene query")
         if type(limit) is not int or not 1 <= limit <= 500:
-            raise ValueError("invalid_input: limit out of range")
-        scene, scene_id, revision = self._studio_scene_context_v1()
-        matches = [obj for obj in scene.objects if query.lower() in obj.name.lower()]
+            raise ValueError("invalid_input: limit")
+        if type(offset) is not int or not 0 <= offset <= 1000000:
+            raise ValueError("invalid_input: offset")
+        target_id = None
+        if object_id is not None:
+            target_id = self._bas08_uuid(object_id)
+            if target_id is None:
+                raise ValueError("invalid_input: object_id")
+        scene, sid, revision = self._studio_scene_context_v1()
+        binding = None
+        if type(bind_missing_ids) is not bool:
+            raise ValueError("invalid_input: bind_missing_ids must be boolean")
+        if bind_missing_ids:
+            if (scene_id != sid or type(scene_revision) is not int
+                    or scene_revision != revision):
+                raise ValueError("stale_scene: ID binding context changed")
+            if query or offset or object_id is not None:
+                raise ValueError("invalid_input: ID binding requires entire scene")
+            binding = self._bas08_bind_ids(scene, sid, revision, idempotency_key)
+            revision = binding["scene_revision"]
+        objects = sorted(scene.objects, key=lambda o: o.name_full)
+        counts = {}
+        for obj in objects:
+            ident = self._bas08_uuid(obj.get("_bas05_object_id"))
+            if ident:
+                counts[ident] = counts.get(ident, 0) + 1
+        if target_id and counts.get(target_id, 0) > 1:
+            raise ValueError("conflict: duplicated object UUID; resolve before edits")
+        filtered = [
+            obj for obj in objects
+            if (not query or query.casefold() in obj.name.casefold())
+            and (target_id is None or
+                 self._bas08_uuid(obj.get("_bas05_object_id")) == target_id)
+        ]
+        if target_id and not filtered:
+            raise ValueError("object_not_found: UUID absent from active scene")
+
+        def vec(values):
+            result = [float(x) for x in values]
+            if not all(math.isfinite(x) for x in result):
+                raise ValueError("invalid_input: non-finite scene transform")
+            return result
+
+        records = []
+        for obj in filtered[offset:offset + limit]:
+            oid = self._bas08_uuid(obj.get("_bas05_object_id"))
+            if oid is not None and counts.get(oid) != 1:
+                oid = None  # Ambiguous UUID must not be used for mutations.
+            bounds = None
+            if obj.type in {"MESH", "CURVE", "SURFACE", "FONT", "META"}:
+                coords = [vec(obj.matrix_world @ mathutils.Vector(corner))
+                          for corner in obj.bound_box]
+                if coords:
+                    bounds = {"min": [min(p[i] for p in coords) for i in range(3)],
+                              "max": [max(p[i] for p in coords) for i in range(3)]}
+            records.append({
+                "object_id": oid, "name": obj.name, "type": obj.type,
+                "selected": bool(obj.select_get()),
+                "location": vec(obj.location), "rotation_euler": vec(obj.rotation_euler),
+                "scale": vec(obj.scale), "world_bounds": bounds,
+                "collections": [{"name": col.name,
+                                 "collection_id": self._bas08_uuid(col.get("_bas07_collection_id"))}
+                                for col in sorted(obj.users_collection, key=lambda c: c.name)],
+                "materials": [{"name": slot.material.name,
+                               "material_id": self._bas08_uuid(slot.material.get("_bas08_material_id"))}
+                              if slot.material else {"name": None, "material_id": None}
+                              for slot in obj.material_slots],
+            })
+        collection_list = [scene.collection, *scene.collection.children_recursive]
+        collection_list = sorted(collection_list, key=lambda c: c.name_full)
+        if len(collection_list) > 2500:
+            raise ValueError("capability_unavailable: too many scene collections")
+        selected = sorted(
+            self._bas08_uuid(o.get("_bas05_object_id")) or o.name
+            for o in objects if o.select_get()
+        )
+        active = bpy.context.view_layer.objects.active
         return {
-            "scene_id": scene_id, "scene_revision": revision,
-            "name": scene.name, "object_count": len(scene.objects),
-            "objects": [{"name": obj.name, "type": obj.type,
-                         "object_id": obj.get("_bas05_object_id")} for obj in matches[:limit]],
+            "scene_id": sid, "scene_revision": revision,
+            "scene_fingerprint": self._bas08_marker[2],
+            "ids_bound": binding["ids_bound"] if binding else 0,
+            "name": scene.name, "object_count": len(objects),
+            "matched_count": len(filtered), "offset": offset, "limit": limit,
+            "has_more": offset + limit < len(filtered),
+            "selected_count": len(selected), "selected": selected[:500],
+            "selection_truncated": len(selected) > 500,
+            "active_object": active.name if active and active.name in scene.objects else None,
+            "frame": scene.frame_current,
+            "camera": scene.camera.name if scene.camera else None,
+            "collections": [{
+                "name": col.name, "collection_id": self._bas08_uuid(col.get("_bas07_collection_id")),
+                "objects": len(col.objects),
+            } for col in collection_list],
+            "objects": records,
+        }
+
+    def studio_capture_viewport_v1(self, max_size=768, mode="viewport",
+                                   scene_id=None, scene_revision=None):
+        """Capture via GPUOffScreen without moving camera, changing UI or frame.
+
+        Never fall back to screen/window grabbing and never accept user paths.
+        """
+        if type(max_size) is not int or not 200 <= max_size <= 2000:
+            raise ValueError("invalid_input: max_size")
+        if mode not in ("viewport", "camera"):
+            raise ValueError("invalid_input: mode")
+        scene, sid, revision = self._studio_scene_context_v1()
+        if scene_id is not None and (scene_id != sid or
+                                   type(scene_revision) is not int or
+                                   scene_revision != revision):
+            raise ValueError("stale_scene: capture must target current scene revision")
+        if mode == "camera" and scene.camera is None:
+            raise ValueError("capability_unavailable: assign an active scene camera")
+        screen = bpy.context.screen
+        area = None
+        if screen is not None:
+            area = next((a for a in screen.areas if a.type == "VIEW_3D"), None)
+        if area is None:
+            raise ValueError("capability_unavailable: open a visible 3D Viewport in Blender GUI")
+        region = next((r for r in area.regions if r.type == "WINDOW"), None)
+        space = area.spaces.active
+        if region is None or not region.width or not region.height:
+            raise ValueError("capability_unavailable: 3D Viewport window region unavailable")
+        scale = min(1.0, max_size / max(region.width, region.height))
+        width, height = max(1, int(region.width * scale)), max(1, int(region.height * scale))
+        try:
+            import gpu
+            import numpy as np
+        except (ImportError, RuntimeError) as exc:
+            raise ValueError("capability_unavailable: GPU or NumPy unavailable") from exc
+
+        before_fingerprint = self._bas08_marker[2]
+        offscreen, image, temp_path = None, None, None
+        try:
+            if mode == "camera":
+                depsgraph = bpy.context.evaluated_depsgraph_get()
+                camera = scene.camera
+                view_matrix = camera.matrix_world.inverted()
+                window_matrix = camera.calc_matrix_camera(
+                    depsgraph, x=width, y=height,
+                    scale_x=scene.render.pixel_aspect_x,
+                    scale_y=scene.render.pixel_aspect_y,
+                )
+            else:
+                view_matrix = space.region_3d.view_matrix.copy()
+                window_matrix = space.region_3d.window_matrix.copy()
+            offscreen = gpu.types.GPUOffScreen(width, height)
+            offscreen.draw_view3d(scene, bpy.context.view_layer, space, region,
+                                  view_matrix, window_matrix, do_color_management=True)
+            buffer = offscreen.texture_color.read()
+            buffer.dimensions = width * height * 4
+            pixels = np.asarray(buffer, dtype=np.float32) / 255.0
+            image = bpy.data.images.new("BAS08_TemporaryCapture", width, height, alpha=True)
+            image.pixels.foreach_set(pixels.ravel())
+            with tempfile.NamedTemporaryFile(prefix="bas08-", suffix=".png",
+                                             delete=False) as tmp:
+                temp_path = tmp.name
+            image.filepath_raw = temp_path
+            image.file_format = "PNG"
+            image.save()
+            with open(temp_path, "rb") as handle:
+                raw = handle.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                raise ValueError("capability_unavailable: PNG exceeds 8 MiB transport budget")
+            if (len(raw) < 24 or not raw.startswith(b"\x89PNG\r\n\x1a\n")
+                    or tuple(__import__("struct").unpack(">II", raw[16:24])) != (width, height)):
+                raise ValueError("capability_unavailable: capture PNG invalid")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("capability_unavailable: GPU offscreen capture failed") from exc
+        finally:
+            if image is not None:
+                bpy.data.images.remove(image)
+            if offscreen is not None:
+                offscreen.free()
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+        _, after_id, after_revision = self._studio_scene_context_v1()
+        if (after_id != sid or after_revision != revision
+                or self._bas08_marker[2] != before_fingerprint):
+            raise ValueError("stale_scene: Blender scene changed during capture")
+        return {
+            "scene_id": sid, "scene_revision": revision,
+            "capture": {"mode": mode, "source": "offscreen",
+                        "mime_type": "image/png", "width": width, "height": height,
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "image_base64": base64.b64encode(raw).decode("ascii"),
+                        "scene_fingerprint": before_fingerprint},
         }
 
     def studio_create_object_v1(self, scene_id, scene_revision, idempotency_key,
@@ -1913,6 +2217,7 @@ class BlenderMCPServer:
         obj["_bas05_object_id"] = obj_id
         revision += 1
         scene["_bas05_scene_revision"] = revision
+        self._bas08_mark_commit(scene)
         reply = {"scene_id": current_id, "scene_revision": revision,
                  "object_id": obj_id, "name": obj.name}
         cache[idempotency_key] = {"digest": digest, "reply": reply}
@@ -2407,6 +2712,7 @@ class BlenderMCPServer:
             cache.pop(next(iter(cache)))
         scene["_bas05_scene_revision"] = rev + 1
         scene["_bas05_idempotency_cache"] = json.dumps(cache, separators=(",", ":"))
+        self._bas08_mark_commit(scene)
         return reply
 
     def studio_create_text_v1(self, scene_id, scene_revision, idempotency_key,
@@ -2604,6 +2910,7 @@ class BlenderMCPServer:
         # A failure after this point is reported as uncertain, never replayed.
         bpy.data.objects.remove(obj, do_unlink=True)
         scene["_bas05_scene_revision"] = rev + 1
+        self._bas08_mark_commit(scene)
         return {"scene_id": current_id, "scene_revision": rev + 1,
                 "object_id": object_id, "backup_snapshot_id": backup_snapshot_id}
 

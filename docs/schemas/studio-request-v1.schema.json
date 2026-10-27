@@ -164,6 +164,15 @@
           "title": "Max Size",
           "type": "integer"
         },
+        "mode": {
+          "default": "viewport",
+          "enum": [
+            "viewport",
+            "camera"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
         "operation": {
           "const": "studio_capture_viewport",
           "title": "Operation",
@@ -1016,7 +1025,10 @@
           "$ref": "#/$defs/ContractVersion"
         },
         "effect_scope": {
-          "const": "read",
+          "enum": [
+            "read",
+            "scene"
+          ],
           "title": "Effect Scope",
           "type": "string"
         },
@@ -1039,6 +1051,26 @@
           "maximum": 500,
           "minimum": 1,
           "title": "Limit",
+          "type": "integer"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        },
+        "offset": {
+          "default": 0,
+          "maximum": 1000000,
+          "minimum": 0,
+          "title": "Offset",
           "type": "integer"
         },
         "operation": {
@@ -1088,6 +1120,11 @@
           ],
           "default": null,
           "title": "Scene Revision"
+        },
+        "bind_missing_ids": {
+          "default": false,
+          "title": "Bind Missing Ids",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1303,6 +1340,19 @@
           "title": "Effect Scope",
           "type": "string"
         },
+        "expected_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Sha256"
+        },
         "idempotency_key": {
           "anyOf": [
             {
@@ -1364,19 +1414,6 @@
           ],
           "default": null,
           "title": "Scene Revision"
-        },
-        "expected_sha256": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Expected Sha256"
         }
       },
       "required": [
