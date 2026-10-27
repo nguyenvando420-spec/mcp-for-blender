@@ -328,3 +328,166 @@ class SnapshotStore:
                 except FileNotFoundError:
                     pass
             os.close(target_fd)
+
+
+    def _open_parent(self, path: Path) -> tuple[int, str]:
+        """Traverse a target path relative to the trusted root, no symlinks."""
+        try:
+            parts = Path(path).relative_to(self.root).parts
+        except ValueError as exc:
+            raise SnapshotError("File lies outside sandbox") from exc
+        if (not parts or any(p in ("", ".", "..") for p in parts)
+                or parts[-1].startswith(".bas12-")):
+            raise SnapshotError("Invalid target pathname")
+        fd = _dir_open(self.root)
+        try:
+            for part in parts[:-1]:
+                child = _child_dir(fd, part, create=False)
+                os.close(fd)
+                fd = child
+            return fd, parts[-1]
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def verify_external(self, path: Path, expected_sha256: str) -> str:
+        """Hash a .blend using a no-follow file descriptor and strict bounds."""
+        if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+            raise SnapshotError("An expected SHA-256 is required")
+        fd, name = self._open_parent(Path(path))
+        try:
+            input_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+            try:
+                st = os.fstat(input_fd)
+                if not stat.S_ISREG(st.st_mode) or not 16 <= st.st_size <= self.max_bytes:
+                    raise SnapshotError("Input is not a bounded BLEND file")
+                if os.read(input_fd, 7) != b"BLENDER":
+                    raise SnapshotError("Invalid BLEND header")
+                os.lseek(input_fd, 0, os.SEEK_SET)
+                digest = hashlib.sha256()
+                while chunk := os.read(input_fd, 1024 * 1024):
+                    digest.update(chunk)
+                if digest.hexdigest() != expected_sha256:
+                    raise SnapshotError("Source checksum changed")
+                return digest.hexdigest()
+            finally:
+                os.close(input_fd)
+        finally:
+            os.close(fd)
+
+    def backup_existing(self, path: Path, expected_sha256: str, *,
+                        scene_id: str, scene_revision: int, idempotency_key: str
+                        ) -> Snapshot:
+        """Durable copy of the currently existing file BEFORE overwriting it."""
+        self.verify_external(path, expected_sha256)
+        rid, dest, replay = self.begin_keyed(
+            scene_id=scene_id, scene_revision=scene_revision,
+            idempotency_key="prior-file:" + idempotency_key,
+            label="prior-file:" + str(path) + "|" + expected_sha256)
+        if replay:
+            return self.verify(rid)
+        parent_fd, name = self._open_parent(path)
+        try:
+            infd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+            try:
+                outfd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                digest = hashlib.sha256()
+                try:
+                    while chunk := os.read(infd, 1024 * 1024):
+                        digest.update(chunk)
+                        view = memoryview(chunk)
+                        while view:
+                            view = view[os.write(outfd, view):]
+                    os.fsync(outfd)
+                finally:
+                    os.close(outfd)
+                if digest.hexdigest() != expected_sha256:
+                    raise SnapshotError("Target changed during backup")
+            finally:
+                os.close(infd)
+        finally:
+            os.close(parent_fd)
+        saved = self.finalize(
+            rid, scene_id=scene_id, scene_revision=scene_revision,
+            idempotency_key="prior-file:" + idempotency_key,
+            label="prior-file:" + str(path) + "|" + expected_sha256)
+        if saved.sha256 != expected_sha256:
+            raise SnapshotError("Backup verification failed")
+        return saved
+
+    def consume_confirmation(self, token: str) -> None:
+        """One-shot durable reservation before a destructive side effect.
+
+        No automatic retry after a crash between reservation and action.
+        """
+        if not isinstance(token, str) or len(token) > 256:
+            raise SnapshotError("Invalid confirmation")
+        marker = hashlib.sha256(token.encode("ascii")).hexdigest()
+        root_fd = _dir_open(self.root)
+        try:
+            folder = _child_dir(root_fd, ".bas12-consumed-confirmations", create=True)
+            try:
+                _write_exclusive(folder, marker, b"spent\n")
+                os.fsync(folder)
+            except FileExistsError as exc:
+                raise SnapshotError("Confirmation already spent; state may be unknown") from exc
+            finally:
+                os.close(folder)
+        finally:
+            os.close(root_fd)
+
+    def publish_overwrite(self, snapshot_id: str, output: Path, *,
+                          expected_sha256: str, backup_id: str) -> str:
+        """Replace an already backed-up BLEND using atomic same-directory rename.
+
+        The root is private; same-process callers must serialize file effects.
+        An external process changing the target between verification and rename
+        is not part of a supported shared-writer contract.
+        """
+        artifact = self.verify(snapshot_id)
+        prior = self.verify(backup_id)
+        if prior.sha256 != expected_sha256:
+            raise SnapshotError("Pre-overwrite backup differs from approved target")
+        self.verify_external(output, expected_sha256)
+        parent_fd, name = self._open_parent(Path(output))
+        temp = ".bas12-replacement-" + uuid4().hex
+        created = False
+        try:
+            old_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+            try:
+                before = os.fstat(old_fd)
+                temp_fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                  | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent_fd)
+                created = True
+                try:
+                    digest = hashlib.sha256()
+                    with open(artifact.path, "rb") as source:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                            view = memoryview(chunk)
+                            while view:
+                                view = view[os.write(temp_fd, view):]
+                    os.fsync(temp_fd)
+                    if digest.hexdigest() != artifact.sha256:
+                        raise SnapshotError("New scene snapshot changed during copy")
+                finally:
+                    os.close(temp_fd)
+                now = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(now.st_mode) or now.st_ino != before.st_ino
+                        or now.st_size != before.st_size
+                        or now.st_mtime_ns != before.st_mtime_ns):
+                    raise SnapshotError("Target changed before replace")
+                os.replace(temp, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                created = False
+                os.fsync(parent_fd)
+                return artifact.sha256
+            finally:
+                os.close(old_fd)
+        finally:
+            if created:
+                try:
+                    os.unlink(temp, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            os.close(parent_fd)
