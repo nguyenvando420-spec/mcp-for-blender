@@ -84,3 +84,67 @@ def test_capture_rejects_wrong_png_dimensions():
         request(), "studio_capture_viewport")
     assert result["status"] == "failed"
     assert result["error"]["code"] == "invalid_input"
+
+
+class IdBindingBridge:
+    """Spy on the mutation/read-only boundary and revision update."""
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, command, params, read_only):
+        self.calls.append((command, params, read_only))
+        if command == "get_addon_info":
+            return {"protocol_version": 16, "capabilities": ["studio_scene_inspect_v1"]}
+        if command == "studio_scene_inspect_v1":
+            if params["bind_missing_ids"]:
+                assert not read_only
+                assert params["scene_id"] == SCENE and params["scene_revision"] == 1
+                return {"scene_id": SCENE, "scene_revision": 2,
+                        "ids_bound": 3, "objects": [], "scene_fingerprint": "a" * 64}
+            assert read_only
+            return {"scene_id": SCENE, "scene_revision": 1, "objects": []}
+        raise AssertionError(command)
+
+
+def test_binding_explicit_mutation_with_typed_gateway():
+    bridge = IdBindingBridge()
+    env = {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+           "effect_scope": "scene", "scene_id": SCENE, "scene_revision": 1,
+           "idempotency_key": "bind:initial", "bind_missing_ids": True}
+    gateway = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL))
+    resp = gateway.invoke(env, "studio_scene_inspect")
+    assert resp["status"] == "succeeded", resp
+    assert resp["scene_revision"] == 2
+    import json
+    assert json.loads(resp["result"]["summary"])["ids_bound"] == 3
+    assert bridge.calls[-1][2] is False
+
+
+def test_observer_cannot_request_mutating_inspection():
+    bridge = IdBindingBridge()
+    env = {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+           "effect_scope": "scene", "scene_id": SCENE, "scene_revision": 1,
+           "idempotency_key": "bind:forged", "bind_missing_ids": True}
+    denied = StudioGateway(bridge, Policy(Profile.OBSERVER)).invoke(env, "studio_scene_inspect")
+    assert denied["error"]["code"] == "permission_denied"
+    assert not bridge.calls
+
+
+def test_bind_requires_context_and_no_filter():
+    from blender_mcp.studio.contracts import validate_request
+    from pydantic import ValidationError
+    base = {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+            "effect_scope": "scene", "scene_id": SCENE, "scene_revision": 1,
+            "idempotency_key": "bind", "bind_missing_ids": True}
+    for patch in [
+        {"effect_scope": "read"},
+        {"scene_id": None, "scene_revision": None},
+        {"idempotency_key": None},
+        {"query": "Cube"},
+        {"offset": 1},
+        {"object_id": str(uuid4())},
+    ]:
+        with pytest.raises(ValidationError):
+            validate_request({**base, **patch})
+    with pytest.raises(ValidationError):
+        validate_request({**base, "bind_missing_ids": False})
