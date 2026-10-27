@@ -1951,6 +1951,75 @@ class BlenderMCPServer:
         except (KeyError, ValueError, OSError, TypeError):
             raise ValueError("permission_denied: BAS-12 sandbox path denied")
 
+    @staticmethod
+    def _bas07_scene_fingerprint(scene):
+        """Bounded deterministic GUI-state digest, independent of MCP revision.
+
+        Includes untracked GUI objects, location/rotation/scale, mesh vertex
+        coordinates, camera lens, collection memberships and material surface
+        colors. This is a conservative conflict detector, NOT a universal
+        canonical serializer for every Blender datablock/driver/modifier.
+        """
+        digest = hashlib.sha256()
+        objects = sorted(scene.objects, key=lambda obj: obj.name_full)
+        if len(objects) > 2500:
+            raise ValueError("conflict: scene too large for safe delete preview")
+        total_vertices = 0
+
+        def add(value):
+            digest.update(json.dumps(value, sort_keys=True,
+                                     ensure_ascii=False, allow_nan=False,
+                                     separators=(",", ":")).encode("utf-8"))
+            digest.update(b"\n")
+
+        def vec(values):
+            return [float(v).hex() for v in values]
+
+        add(["scene", scene.name_full, scene.camera.name_full if scene.camera else None,
+             scene.world.name_full if scene.world else None])
+        for obj in objects:
+            add(["object", obj.name_full, obj.type, obj.get("_bas05_object_id"),
+                 vec(obj.location), vec(obj.rotation_euler), vec(obj.scale),
+                 obj.parent.name_full if obj.parent else None,
+                 sorted(col.name_full for col in obj.users_collection)])
+            data = obj.data
+            if obj.type == "MESH" and data is not None:
+                total_vertices += len(data.vertices)
+                if total_vertices > 100000:
+                    raise ValueError("conflict: scene geometry exceeds safe preview limit")
+                add(["mesh", data.name_full, len(data.vertices), len(data.polygons)])
+                for vertex in data.vertices:
+                    add(["v", vec(vertex.co)])
+            if obj.type == "CAMERA" and data is not None:
+                add(["camera", data.name_full, float(data.lens).hex()])
+            if obj.type == "FONT" and data is not None:
+                add(["font", data.body])
+            if data is not None and hasattr(data, "materials"):
+                for index, material in enumerate(data.materials):
+                    if material is None:
+                        add(["material", index, None])
+                        continue
+                    add(["material", index, material.name_full,
+                         vec(material.diffuse_color),
+                         bool(material.use_nodes)])
+                    if material.use_nodes and material.node_tree:
+                        nodes = sorted(material.node_tree.nodes, key=lambda node: node.name)
+                        if len(nodes) > 300:
+                            raise ValueError("conflict: too many material nodes")
+                        for node in nodes:
+                            if node.type == "BSDF_PRINCIPLED":
+                                inputs = []
+                                for key in ("Base Color", "Metallic", "Roughness"):
+                                    socket = node.inputs.get(key)
+                                    if socket is not None:
+                                        value = socket.default_value
+                                        try:
+                                            inputs.append([key, vec(value)])
+                                        except TypeError:
+                                            inputs.append([key, float(value).hex()])
+                                add(["shader", node.name_full, inputs])
+        return digest.hexdigest()
+
     def studio_scene_snapshot_v1(self, scene_id, scene_revision, snapshot_id, path):
         """Main-thread Blender BLEND copy; DOES NOT overwrite the active file."""
         scene, current_id, revision = self._studio_scene_context_v1()
@@ -1979,6 +2048,7 @@ class BlenderMCPServer:
         return {"scene_id": current_id, "scene_revision": revision,
                 "snapshot_id": str(uuid.UUID(snapshot_id)),
                 "sha256": sha.hexdigest(), "bytes": count,
+                "scene_fingerprint": self._bas07_scene_fingerprint(scene),
                 "objects": [{"object_id": str(obj.get("_bas05_object_id")),
                              "name": obj.name}
                             for obj in scene.objects
@@ -2518,7 +2588,15 @@ class BlenderMCPServer:
         # Never delete shared objects used by other scenes.
         if any(s != scene for s in getattr(obj, "users_scene", [])):
             raise ValueError("permission_denied: object shared by other scenes")
+        # Direct Blender GUI edits do not advance BAS-05 revision. Compare
+        # approved preview, fresh pre-delete backup and current live scene
+        # against a deterministic content digest; no side effect on mismatch.
+        live_fingerprint = self._bas07_scene_fingerprint(scene)
         for manifest in details:
+            if (not isinstance(manifest.get("scene_fingerprint"), str)
+                    or not hmac.compare_digest(manifest["scene_fingerprint"],
+                                               live_fingerprint)):
+                raise ValueError("conflict: GUI scene changed since preview")
             preview = [entry for entry in manifest.get("scene_inventory", [])
                        if entry.get("object_id") == object_id]
             if len(preview) != 1 or preview[0]["name"] != obj.name:
