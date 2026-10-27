@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -36,7 +37,6 @@ bpy.types.blendermcp_server = server
 
 # BAS-12 release acceptance golden material/camera scene state.
 # This is a disposable CI workspace, never a live user project.
-import json
 
 golden = bpy.context.scene
 golden_camera = golden.camera
