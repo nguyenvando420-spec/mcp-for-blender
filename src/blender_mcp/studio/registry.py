@@ -6,7 +6,11 @@ authentication are intentionally NOT advertised as executable capabilities.
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
+import struct
 import math
 import os
 import sys
@@ -16,7 +20,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from .contracts import (
-    Capabilities, ContractVersion, ErrorCode, ObjectRef, PrimitiveSpec, TextSpec,
+    Capabilities, CaptureResult, ContractVersion, ErrorCode, ObjectRef, PrimitiveSpec, TextSpec,
     ResultPayload, SceneDiff, StudioError, StudioResponse, ensure_supported,
 )
 from ..security_policy import Policy, PolicyDenied, authorize_studio_request
@@ -25,6 +29,7 @@ ADDON_PROTOCOL_MIN = 15
 # Operation -> command implemented in the paired BAS-05 Blender addon.
 HANDLERS = {
     "studio_scene_inspect": "studio_scene_inspect_v1",
+    "studio_capture_viewport": "studio_capture_viewport_v1",
     "studio_create_object": "studio_create_object_v1",
     "studio_set_transform": "studio_set_transform_v1",
     "studio_manage_collection": "studio_manage_collection_v1",
@@ -34,7 +39,7 @@ HANDLERS = {
     "studio_scene_open": "studio_scene_open_v1",
     "studio_scene_restore": "studio_scene_restore_v1",
 }
-READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect"})
+READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect", "studio_capture_viewport"})
 MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection"})
 
 
@@ -99,7 +104,8 @@ class StudioGateway:
                             | ({"scene-snapshot-v1"} if "studio_scene_snapshot" in available else set())
                             | ({"object-transforms-v1"} if "studio_set_transform" in available else set())
                             | ({"collections-v1"} if "studio_manage_collection" in available else set())
-                            | ({"confirmed-delete-v1"} if "studio_delete_object" in available else set()))
+                            | ({"confirmed-delete-v1"} if "studio_delete_object" in available else set())
+                            | ({"offscreen-capture-v1"} if "studio_capture_viewport" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -112,7 +118,7 @@ class StudioGateway:
                 "addon_version": info.get("addon_version"),
                 "blender_version": info.get("blender_version"),
                 "operations": sorted(caps.operations & (
-                    {"studio_scene_inspect"} if self.policy.profile.value == "observer" else
+                    {"studio_scene_inspect", "studio_capture_viewport"} if self.policy.profile.value == "observer" else
                     set(caps.operations))),
                 "features": sorted(caps.features),
                 "profile": self.policy.profile.value,
@@ -173,12 +179,47 @@ class StudioGateway:
             ensure_supported(req, caps)
             _validate_numeric_bounds(req)
             if req.operation == "studio_scene_inspect":
-                reply = self.bridge(HANDLERS[req.operation],
-                                    {"query": req.query or "", "limit": req.limit}, True)
+                reply = self.bridge(HANDLERS[req.operation], {
+                    "query": req.query or "", "limit": req.limit, "offset": req.offset,
+                    "object_id": str(req.object_id) if req.object_id else None,
+                }, True)
+                if req.scene_id is not None and (
+                    reply.get("scene_id") != str(req.scene_id)
+                    or reply.get("scene_revision") != req.scene_revision
+                ):
+                    raise ValueError("stale_scene: inspect context changed")
                 result = ResultPayload(summary=json.dumps({
-                    "name": reply.get("name"), "object_count": reply.get("object_count"),
-                    "objects": reply.get("objects", []),
-                }, ensure_ascii=False))
+                    k: v for k, v in reply.items()
+                    if k not in ("scene_id", "scene_revision")
+                }, ensure_ascii=False, allow_nan=False))
+            elif req.operation == "studio_capture_viewport":
+                reply = self.bridge(HANDLERS[req.operation], {
+                    "max_size": req.max_size, "mode": req.mode,
+                    "scene_id": str(req.scene_id) if req.scene_id else None,
+                    "scene_revision": req.scene_revision,
+                }, True)
+                if req.scene_id is not None and (
+                    reply.get("scene_id") != str(req.scene_id)
+                    or reply.get("scene_revision") != req.scene_revision
+                ):
+                    raise ValueError("stale_scene: capture context changed")
+                capture = CaptureResult.model_validate(reply["capture"])
+                if len(capture.image_base64) > 12 * 1024 * 1024:
+                    raise ValueError("invalid_input: image exceeds transport budget")
+                try:
+                    png = base64.b64decode(capture.image_base64, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise ValueError("invalid_input: malformed capture bytes") from exc
+                if (not png.startswith(b"\x89PNG\r\n\x1a\n")
+                    or len(png) < 24
+                    or struct.unpack(">II", png[16:24]) != (capture.width, capture.height)
+                    or hashlib.sha256(png).hexdigest() != capture.sha256):
+                    raise ValueError("invalid_input: capture checksum/dimensions mismatch")
+                result = ResultPayload(capture=capture, summary=json.dumps({
+                    "mode": capture.mode, "width": capture.width, "height": capture.height,
+                    "source": capture.source, "mime_type": capture.mime_type,
+                    "sha256": capture.sha256, "scene_fingerprint": capture.scene_fingerprint,
+                }))
             elif req.operation in ("studio_scene_snapshot", "studio_scene_save"):
                 from .snapshot_store import SnapshotStore, SnapshotError
                 root = os.getenv("BLENDER_MCP_STUDIO_ROOT", "")
@@ -468,7 +509,7 @@ class StudioGateway:
         except ValueError as exc:
             if str(exc).startswith("invalid_input:"):
                 code = ErrorCode.INVALID_INPUT
-            elif str(exc) == ErrorCode.CAPABILITY_UNAVAILABLE.value:
+            elif str(exc) == ErrorCode.CAPABILITY_UNAVAILABLE.value or str(exc).startswith("capability_unavailable:"):
                 code = ErrorCode.CAPABILITY_UNAVAILABLE
             elif "stale_scene" in str(exc):
                 code = ErrorCode.STALE_SCENE
@@ -488,6 +529,9 @@ class StudioGateway:
                 return self._failed(raw, ErrorCode.STALE_SCENE, "Scene revision mismatch")
             if "invalid_input:" in message:
                 return self._failed(raw, ErrorCode.INVALID_INPUT, "Invalid Blender arguments")
+            if "capability_unavailable:" in message:
+                return self._failed(raw, ErrorCode.CAPABILITY_UNAVAILABLE,
+                                    "Open a 3D Viewport; camera mode needs active camera; GPU context required")
             if "object_not_found:" in message:
                 return self._failed(raw, ErrorCode.OBJECT_NOT_FOUND, "Object not found")
             if "conflict:" in message:

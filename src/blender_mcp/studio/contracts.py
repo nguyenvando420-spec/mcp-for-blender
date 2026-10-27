@@ -102,12 +102,15 @@ class SceneInspect(RequestBase):
     effect_scope: Literal[EffectScope.READ]
     query: str | None = None
     limit: int = Field(default=20, ge=1, le=500)
+    offset: int = Field(default=0, ge=0, le=1000000)
+    object_id: UUID | None = None
 
 
 class CaptureViewport(RequestBase):
     operation: Literal["studio_capture_viewport"]
     effect_scope: Literal[EffectScope.READ]
     max_size: int = Field(default=768, ge=200, le=2000)
+    mode: Literal["viewport", "camera"] = "viewport"
 
 
 class PrimitiveSpec(StrictModel):
@@ -333,12 +336,25 @@ class SceneDiff(StrictModel):
     deleted: list[UUID] = Field(default_factory=list)
 
 
+class CaptureResult(StrictModel):
+    """Verified scene-bound offscreen PNG and transport metadata."""
+    mode: Literal["viewport", "camera"]
+    source: Literal["offscreen"]
+    mime_type: Literal["image/png"]
+    width: int = Field(ge=1, le=2000)
+    height: int = Field(ge=1, le=2000)
+    sha256: Sha256
+    image_base64: str
+    scene_fingerprint: Sha256
+
+
 class ResultPayload(StrictModel):
     objects: list[ObjectRef] = Field(default_factory=list)
     artifact_ids: list[UUID] = Field(default_factory=list)
     snapshot_id: UUID | None = None
     scene_diff: SceneDiff = Field(default_factory=SceneDiff)
     summary: str | None = None
+    capture: CaptureResult | None = None
 
 
 class StudioError(StrictModel):

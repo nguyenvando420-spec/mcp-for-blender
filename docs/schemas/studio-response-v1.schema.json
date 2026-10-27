@@ -1,5 +1,66 @@
 {
   "$defs": {
+    "CaptureResult": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "image_base64": {
+          "title": "Image Base64",
+          "type": "string"
+        },
+        "mime_type": {
+          "const": "image/png",
+          "title": "Mime Type",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "viewport",
+            "camera"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "scene_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scene Fingerprint",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source": {
+          "const": "offscreen",
+          "title": "Source",
+          "type": "string"
+        },
+        "width": {
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mode",
+        "source",
+        "mime_type",
+        "width",
+        "height",
+        "sha256",
+        "image_base64",
+        "scene_fingerprint"
+      ],
+      "title": "CaptureResult",
+      "type": "object"
+    },
     "ContractVersion": {
       "additionalProperties": false,
       "properties": {
@@ -81,6 +142,18 @@
           },
           "title": "Artifact Ids",
           "type": "array"
+        },
+        "capture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CaptureResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capture"
         },
         "objects": {
           "items": {

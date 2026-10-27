@@ -2360,6 +2360,12 @@ def studio_scene_inspect(request: dict) -> dict:
 
 
 @mcp.tool()
+def studio_capture_viewport(request: dict) -> dict:
+    """Scene-bound offscreen GPU PNG capture; no camera/shading/frame mutation."""
+    return _studio_gateway().invoke(request, "studio_capture_viewport")
+
+
+@mcp.tool()
 def studio_create_object(request: dict) -> dict:
     """Create a bounded primitive using a typed BAS-03 CreateObject JSON envelope."""
     return _studio_gateway().invoke(request, "studio_create_object")

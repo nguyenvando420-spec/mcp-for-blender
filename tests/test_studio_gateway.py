@@ -133,8 +133,8 @@ def test_text_is_not_implicitly_advertised_as_supported_variant():
 
 
 @pytest.mark.parametrize("profile,expected", [
-    (Profile.OBSERVER, {"studio_handshake", "studio_scene_inspect"}),
-    (Profile.STUDIO_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_set_transform", "studio_manage_collection"}),
+    (Profile.OBSERVER, {"studio_handshake", "studio_scene_inspect", "studio_capture_viewport"}),
+    (Profile.STUDIO_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_capture_viewport", "studio_create_object", "studio_set_transform", "studio_manage_collection"}),
     (Profile.DEVELOPER_LOCAL, {"studio_handshake", "studio_scene_inspect", "studio_create_object", "studio_set_transform", "studio_manage_collection"}),
     (Profile.REMOTE, set()), (Profile.WORKER, set()),
 ])
