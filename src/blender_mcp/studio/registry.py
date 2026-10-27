@@ -203,7 +203,8 @@ class StudioGateway:
                             snapshot_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
                             idempotency_key=req.idempotency_key, label=label,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != artifact.sha256:
                             raise SnapshotError("Blender snapshot checksum mismatch")
                     if req.operation == "studio_scene_save":
@@ -263,7 +264,8 @@ class StudioGateway:
                             scene_revision=req.scene_revision,
                             idempotency_key="pre-open:" + req.idempotency_key,
                             label=str(req.input_uri) + "|" + req.expected_sha256,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != backup.sha256:
                             raise SnapshotError("Pre-open snapshot checksum mismatch")
                     store.consume_confirmation(req.confirmation_token)
@@ -304,7 +306,8 @@ class StudioGateway:
                             backup_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
                             idempotency_key="pre-restore:" + req.idempotency_key,
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if saved.get("sha256") != backup.sha256:
                             raise SnapshotError("Backup checksum mismatch")
                     restored_reply = self.bridge(HANDLERS[req.operation], {
@@ -416,9 +419,22 @@ class StudioGateway:
                             scene_revision=req.scene_revision,
                             idempotency_key="pre-delete:" + req.idempotency_key,
                             label=str(req.object_id) + "|" + str(req.snapshot_id),
-                            scene_inventory=saved.get("objects", []))
+                            scene_inventory=saved.get("objects", []),
+                            scene_fingerprint=saved.get("scene_fingerprint"))
                         if backup.sha256 != saved.get("sha256"):
                             raise SnapshotError("Pre-delete snapshot checksum mismatch")
+                    # The preview is consented to at a particular content
+                    # state. A direct GUI mutation does NOT necessarily change
+                    # _bas05_scene_revision, so compare both snapshots before
+                    # burning the token or dispatching the destructive handler.
+                    latest = store.verify(backup_id)
+                    prior_manifest = json.loads((prior.path.parent / "manifest.json").read_text())
+                    latest_manifest = json.loads((latest.path.parent / "manifest.json").read_text())
+                    before_hash = prior_manifest.get("scene_fingerprint")
+                    after_hash = latest_manifest.get("scene_fingerprint")
+                    if (not isinstance(before_hash, str) or len(before_hash) != 64
+                            or before_hash != after_hash):
+                        raise SnapshotError("Direct GUI mutation invalidated delete preview")
                     store.consume_confirmation(req.confirmation_token)
                     reply = self.bridge(HANDLERS["studio_delete_object"], {
                         "scene_id": str(req.scene_id), "scene_revision": req.scene_revision,
