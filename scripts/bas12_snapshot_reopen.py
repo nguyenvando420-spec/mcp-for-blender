@@ -13,7 +13,7 @@ scene = bpy.context.scene
 assert scene.get("_bas05_scene_id") == expected_scene_id, (scene.get("_bas05_scene_id"), expected_scene_id)
 assert int(scene.get("_bas05_scene_revision", -1)) == revision
 assert len(scene.objects) >= 51, len(scene.objects)
-assert scene.camera is not None and scene.camera in scene.objects
+assert scene.camera is not None and scene.camera.name in scene.objects
 assert bpy.data.worlds is not None
 assert not any(o.name == "BAS12_Throwaway" for o in scene.objects)
 assert any(obj.name == "BAS05_Cube" and obj.get("_bas05_object_id")
