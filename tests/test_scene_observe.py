@@ -40,7 +40,7 @@ def test_empty_scene_and_validation():
     scene = SimpleNamespace(name="Empty", objects=[])
     assert mod.observe_scene(scene)["total"] == 0
     with pytest.raises(ValueError):
-        mod.observe_scene(scene, limit=201)
+        mod.observe_scene(scene, limit=501)
 
 
 def test_paging_does_not_hide_id_lookup():

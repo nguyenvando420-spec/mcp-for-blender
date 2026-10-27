@@ -59,7 +59,8 @@
         "scene_fingerprint"
       ],
       "title": "CaptureResult",
-      "type": "object"
+      "type": "object",
+      "description": "Verified scene-bound offscreen PNG and transport metadata."
     },
     "ContractVersion": {
       "additionalProperties": false,
