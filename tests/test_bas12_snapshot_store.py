@@ -104,3 +104,44 @@ def test_snapshot_identifiers_never_select_arbitrary_paths(tmp_path):
     snapshot_dir.symlink_to(injected, target_is_directory=True)
     with pytest.raises(OSError):
         store.verify(rid)
+
+
+def test_no_overwrite_publish_and_no_hardlink_alias(tmp_path):
+    store = _store(tmp_path)
+    rid, path = store.begin()
+    _fake_blend(path)
+    store.finalize(rid, scene_id=str(uuid4()), scene_revision=1,
+                   idempotency_key="publish")
+    output = store.root / "test.blend"
+    digest, replayed = store.publish_new(rid, output)
+    assert replayed is False
+    assert output.read_bytes() == path.read_bytes()
+    assert output.stat().st_ino != path.stat().st_ino
+    assert store.verify(rid).sha256 == digest
+    with pytest.raises(FileExistsError):
+        store.publish_new(rid, output)
+    assert store.verify(rid).sha256 == digest
+    with pytest.raises(SnapshotError):
+        store.publish_new(rid, tmp_path / "other.blend")
+
+
+def test_keyed_snapshot_conflict_and_partial_unknown(tmp_path):
+    store = _store(tmp_path)
+    sid = str(uuid4())
+    rid, path, replay = store.begin_keyed(scene_id=sid, scene_revision=5,
+                                         idempotency_key="same", label="original")
+    assert replay is False
+    _fake_blend(path)
+    with pytest.raises(SnapshotError, match="state unknown"):
+        store.begin_keyed(scene_id=sid, scene_revision=5,
+                          idempotency_key="same", label="original")
+    store.finalize(rid, scene_id=sid, scene_revision=5,
+                   idempotency_key="same", label="original")
+    assert store.begin_keyed(scene_id=sid, scene_revision=5,
+                             idempotency_key="same", label="original")[2] is True
+    with pytest.raises(SnapshotError, match="conflict"):
+        store.begin_keyed(scene_id=sid, scene_revision=5,
+                          idempotency_key="same", label="changed")
+    with pytest.raises(SnapshotError, match="conflict"):
+        store.begin_keyed(scene_id=sid, scene_revision=6,
+                          idempotency_key="same", label="original")
