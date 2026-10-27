@@ -9,6 +9,7 @@ Spec: https://app.notion.com/p/40515de298eb815e9c26f1045b8fe1a6
 - `studio_scene_snapshot` typed MCP tool: gateway enforces BAS-04 file policy, allocates the private output, calls dedicated Blender main-thread `bpy.ops.wm.save_as_mainfile(copy=True)` handler and verifies bytes and checksum before returning a snapshot UUID.
 - Blender addon independently checks that save destination is a private pre-allocated UUID path below `BLENDER_MCP_STUDIO_ROOT`. Root and package-bundled addons remain byte-for-byte identical.
 - `studio_scene_save` (non-overwrite): creates an immutable snapshot then copies it through no-follow directory descriptors into a separate temporary file and atomically publishes with an exclusive filesystem link. Existing output files are never overwritten; no hardlink alias of the immutable source is created.
+- Snapshot manifest also carries bounded UUID-to-original-name inventory for typed objects. Library restores preserve these names despite Blender auto-suffixing imported datablocks on collisions.
 - `studio_scene_restore`: validates signed short-lived operation/scene/revision/snapshot-bound confirmation at gateway AND add-on, creates and verifies a new pre-restore backup, checks source manifest/checksum, imports scene datablocks through Blender libraries and switches the active GUI scene without unloading the socket add-on. Add-on records spent confirmation nonces with exclusive files.
 - Python path corruption and symlink tests plus Blender 4.5.15 GUI MCP snapshot/replay → separate headless Blender reopen acceptance were added.
 
