@@ -27,3 +27,28 @@ The CI pipeline runs Python 3.11.14 / 3.12.14 unit and security tests, build and
 ## Merge gate
 
 Review security/fault-injection findings, validate final HEAD on Python 3.11/3.12 and Blender GUI, inspect test artifact evidence, verify PR #8 dependency and merge order, and only then consider marking Done and merging to main.
+
+## Owner self-acceptance release scope (2026-10-27)
+
+The owner `nguyenvando420-spec` has opted for repository-owner
+self-acceptance, without an independent `APPROVED` reviewer. This does not
+represent independent review. The BAS-07 release scope is limited to local
+authenticated MCP on Linux x86_64, Blender 4.5.15, and the private,
+single-writer POSIX file sandbox described in BAS-12. Trusted HMAC
+confirmations must still come from a UI/backend after explicit preview;
+the model cannot issue them by itself.
+
+The automated real Blender GUI/Xvfb main-thread tests (including five edits
+made outside the MCP command dispatcher) are the agreed release test mode.
+**Human mouse-driven GUI UAT was not performed**; it is excluded from this
+scoped release and must be completed for wider desktop support.
+Fingerprint coverage is intentionally finite: modifiers, drivers, animation
+and arbitrary Blender app data are not fully tracked until BAS-08. Where
+stale external edits cannot be excluded, destructive operations must remain
+disabled at the product layer. Crash-after-side-effect cannot guarantee
+automatic rollback; use the verified snapshot ID for explicit reconciliation.
+
+Owner may sign `ACCEPTED FOR MERGE` only after BAS-12 is merged into `main`,
+PR #7 is retargeted and its integrated head passes Python 3.11/3.12 and
+Blender 4.5.15 GUI CI. Do not represent CI results on earlier commits as
+validation of the final integration commit.
