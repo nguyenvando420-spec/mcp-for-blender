@@ -165,7 +165,7 @@ class StudioGateway:
                         artifact = store.finalize(
                             snapshot_id, scene_id=str(req.scene_id),
                             scene_revision=req.scene_revision,
-                            idempotency_key=req.idempotency_key)
+                            idempotency_key=req.idempotency_key, label=req.label or "")
                         if saved.get("sha256") != artifact.sha256:
                             raise SnapshotError("Blender snapshot checksum mismatch")
                     reply = {"scene_id": artifact.scene_id,
