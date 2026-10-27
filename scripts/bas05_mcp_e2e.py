@@ -331,8 +331,8 @@ async def accept(port, record):
                         "label": "gui-edit-preview-" + action}}))
                 assert stale_preview["status"] == "succeeded", stale_preview
                 stale_id = stale_preview["result"]["snapshot_id"]
-                change_request = output / "bas07-direct-edit.request.json"
-                change_result = output / "bas07-direct-edit.result.json"
+                change_request = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent / "bas07-direct-edit.request.json"
+                change_result = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent / "bas07-direct-edit.result.json"
                 if change_result.exists():
                     change_result.unlink()
                 change_request.write_text(json.dumps({
