@@ -65,7 +65,7 @@ async def accept(port, record):
             assert handshake["addon_protocol"] >= 15, handshake
             assert handshake["blender_version"].startswith("4.5.15"), handshake
             assert handshake["profile"] == "studio-local"
-            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot", "studio_scene_restore"} <= set(handshake["operations"])
+            assert {"studio_create_object", "studio_scene_inspect", "studio_scene_snapshot", "studio_scene_restore", "studio_scene_save"} <= set(handshake["operations"])
             assert str(ROOT) in handshake["package_file"], handshake
             assert "uvx" not in handshake["package_file"], handshake
             assert Path(handshake["python_executable"]).resolve() == Path(sys.executable).resolve(), handshake
@@ -189,6 +189,22 @@ async def accept(port, record):
             assert not any(item["name"] == "BAS12_Throwaway" for item in restored_objects)
             assert any(item["object_id"] == oid for item in restored_objects)
             assert restored["result"]["snapshot_id"] != snapshot_id  # pre-restore backup ID
+            # BAS-12 non-overwrite save is an atomic copy, not a hardlink
+            # to the immutable snapshot. Both file and snapshot survive.
+            destination = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]) / "bas12-export.blend"
+            saved_scene = unpack(await client.call_tool("studio_scene_save", {"request": {
+                "operation": "studio_scene_save", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas12-export", "output_uri": destination.as_uri()}}))
+            assert saved_scene["status"] == "succeeded", saved_scene
+            assert destination.is_file() and destination.read_bytes().startswith(b"BLENDER")
+            assert saved_scene["scene_revision"] == rev + 53
+            record["bas12_save"] = {
+                "path": str(destination),
+                "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                "snapshot_id": saved_scene["result"]["snapshot_id"],
+                "overwrite_disabled": True,
+            }
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 52,
                                        "after_revision": rev + 53,
                                        "backup_id": restored["result"]["snapshot_id"]}
