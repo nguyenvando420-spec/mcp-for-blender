@@ -259,6 +259,64 @@ def verify_confirmation(secret: bytes, token: str, *, operation: str, scene_id: 
         raise PolicyDenied("Confirmation invalid, stale or not bound to scene") from exc
 
 
+
+# Versioned resource-bound confirmations for destructive file/object actions.
+# v1 confirmations remain supported for scene_restore; v2 prevents a valid
+# delete or overwrite confirmation being redirected to another target.
+_RESOURCE_TOKEN_STRUCT = struct.Struct("!B16sQ16sQ16s32s")
+
+
+def issue_resource_confirmation(secret: bytes, *, operation: str, scene_id: str,
+                                scene_revision: int, resource: str,
+                                snapshot_id: str | None = None,
+                                now: int | None = None) -> str:
+    """Trusted UI/backend ONLY, after displaying the actual resource preview."""
+    if len(secret) < 32 or not isinstance(resource, str) or not resource:
+        raise PolicyDenied("Invalid resource confirmation")
+    fields = _confirmation_fields(operation, scene_id, scene_revision,
+                                  snapshot_id if operation != "studio_scene_save" else None)
+    exp = int(time.time()) if now is None else now
+    try:
+        data = _RESOURCE_TOKEN_STRUCT.pack(
+            *fields, exp + MAX_CONFIRMATION_AGE_SECONDS,
+            secrets.token_bytes(16),
+            hashlib.sha256(resource.encode("utf-8")).digest())
+    except (ValueError, struct.error, OverflowError) as exc:
+        raise PolicyDenied("Invalid confirmation payload") from exc
+    return base64.urlsafe_b64encode(
+        data + hmac.new(secret, b"BAS12-RESOURCE-V2" + data, hashlib.sha256).digest()
+    ).decode("ascii").rstrip("=")
+
+
+def verify_resource_confirmation(secret: bytes, token: str, *,
+                                 operation: str, scene_id: str,
+                                 scene_revision: int, resource: str,
+                                 snapshot_id: str | None = None,
+                                 now: int | None = None) -> None:
+    if len(secret) < 32 or not isinstance(token, str) or not isinstance(resource, str):
+        raise PolicyDenied("Missing trusted resource confirmation")
+    fields = _confirmation_fields(operation, scene_id, scene_revision,
+                                  snapshot_id if operation != "studio_scene_save" else None)
+    try:
+        raw = base64.b64decode(token + "=" * (-len(token) % 4),
+                               altchars=b"-_", validate=True)
+        if len(raw) != _RESOURCE_TOKEN_STRUCT.size + 32:
+            raise ValueError("Resource confirmation version mismatch")
+        data, signature = raw[:-32], raw[-32:]
+        if not hmac.compare_digest(hmac.new(
+                secret, b"BAS12-RESOURCE-V2" + data, hashlib.sha256).digest(), signature):
+            raise ValueError("Invalid confirmation signature")
+        code, sid, revision, snapshot, expires, nonce, digest = _RESOURCE_TOKEN_STRUCT.unpack(data)
+        current = int(time.time()) if now is None else now
+        if (code, sid, revision, snapshot) != fields or not current < expires <= current + 300:
+            raise ValueError("Expired or mismatched scene confirmation")
+        if not any(nonce) or not hmac.compare_digest(
+                digest, hashlib.sha256(resource.encode("utf-8")).digest()):
+            raise ValueError("Mismatched confirmation resource")
+    except (ValueError, TypeError, binascii.Error, struct.error) as exc:
+        raise PolicyDenied("Resource confirmation missing/invalid/stale") from exc
+
+
 def authorize_studio_request(data: dict, policy: Policy, *,
                              confirmation_secret: bytes | None = None,
                              now: int | None = None):
@@ -306,11 +364,26 @@ def authorize_studio_request(data: dict, policy: Policy, *,
     if needs_confirmation:
         if not confirmation_secret:
             raise PolicyDenied("Trusted confirmation verifier is unavailable")
-        verify_confirmation(
-            confirmation_secret, request.confirmation_token,
-            operation=request.operation, scene_id=str(request.scene_id),
-            scene_revision=request.scene_revision,
-            snapshot_id=str(request.snapshot_id) if getattr(request, "snapshot_id", None) else None,
-            now=now,
-        )
+        if request.operation == "studio_scene_open":
+            resource = str(request.input_uri) + "|" + str(request.expected_sha256)
+        elif request.operation == "studio_scene_save":
+            resource = str(request.output_uri) + "|" + str(request.expected_sha256)
+        elif request.operation == "studio_delete_object":
+            resource = str(request.object_id)
+        else:
+            resource = None
+        if resource is not None:
+            verify_resource_confirmation(
+                confirmation_secret, request.confirmation_token,
+                operation=request.operation, scene_id=str(request.scene_id),
+                scene_revision=request.scene_revision, resource=resource,
+                snapshot_id=str(request.snapshot_id) if getattr(request, "snapshot_id", None) else None,
+                now=now)
+        else:
+            verify_confirmation(
+                confirmation_secret, request.confirmation_token,
+                operation=request.operation, scene_id=str(request.scene_id),
+                scene_revision=request.scene_revision,
+                snapshot_id=str(request.snapshot_id) if getattr(request, "snapshot_id", None) else None,
+                now=now)
     return request
