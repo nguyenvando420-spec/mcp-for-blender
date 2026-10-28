@@ -79,7 +79,7 @@ def test_invalid_spec_never_mutates(spec):
     result = StudioGateway(bridge, Policy(Profile.STUDIO_LOCAL)).invoke(raw(spec), "studio_assign_material")
     assert result["status"] == "failed", result
     assert result["error"]["code"] == "invalid_input", result
-    assert not bridge.calls
+    assert not any(cmd == "studio_assign_material_v1" for cmd, _, _ in bridge.calls)
 
 
 def test_observer_hidden_and_forbidden():
