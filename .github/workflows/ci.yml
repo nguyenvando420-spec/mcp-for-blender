@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # compatibility matrix uses historical git show <ref>:addon.py
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@v6
         with:
@@ -43,9 +44,11 @@ jobs:
       - name: Lint new baseline scripts
         run: uv run --frozen --python ${{ matrix.python-version }} --with ruff==0.14.0 ruff check --select E4,E7,E9,F63,F7,F82 tests/test_fork_baseline.py tests/test_golden_runtime.py tests/test_studio_contracts.py src/blender_mcp/studio scripts
       - name: Run upstream and fork unit tests
-        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -q -rs --junitxml="${{ runner.temp }}/bas09-pytest.xml"
+        run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 --with zstandard==0.25.0 pytest -q -rs --junitxml="${{ runner.temp }}/bas09-pytest.xml"
       - name: Inventory skipped tests
         run: uv run --frozen --python ${{ matrix.python-version }} python scripts/bas09_ci_report.py pytest --input "${{ runner.temp }}/bas09-pytest.xml" --output "${{ runner.temp }}/bas09-pytest-skips.json"
+      - name: Show skip coverage and categorize any remaining omissions
+        run: cat "${{ runner.temp }}/bas09-pytest-skips.json"
       - name: BAS-06 ten restart/rebind cycles with diagnostic log
         run: uv run --frozen --python ${{ matrix.python-version }} --with pytest==8.4.2 pytest -s -q tests/test_bas06_socket_security.py::test_ten_successive_restart_rebind_cycles
       - name: Upload BAS09 skipped test inventory
@@ -87,7 +90,9 @@ jobs:
       - name: BAS-06 real independent Blender render worker + durable SQLite recovery
         run: uv run --frozen --python 3.12.14 python scripts/bas06_worker_e2e.py --scene "${{ runner.temp }}/bas05-mcp-gui/bas05-scene.blend" --output-dir "${{ runner.temp }}/bas06-worker"
       - name: Validate BAS09 thirteen integration cases
-        run: uv run --frozen --python 3.12.14 python scripts/bas09_ci_report.py gui --input "${{ runner.temp }}/bas05-mcp-gui/bas05-e2e.json" --output "${{ runner.temp }}/bas05-mcp-gui/bas09-evidence.json"
+        run: uv run --frozen --python 3.12.14 python scripts/bas09_ci_report.py gui --input "${{ runner.temp }}/bas05-mcp-gui/bas05-e2e.json" --output "${{ runner.temp }}/bas05-mcp-gui/bas09-evidence.json" --expected-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Display GUI acceptance checks and artifact SHA256
+        run: cat "${{ runner.temp }}/bas05-mcp-gui/bas09-evidence.json"
       - name: Upload BLEND, PNG, environment, checksums and logs
         if: always()
         uses: actions/upload-artifact@v4

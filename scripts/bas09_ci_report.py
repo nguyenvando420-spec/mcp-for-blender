@@ -35,19 +35,36 @@ def skips(path):
             "skips": items}
 
 
-def gui(path):
+def gui(path, expected_sha=None):
     data = json.loads(path.read_text())
     def get(*keys):
         value = data
         for key in keys:
             value = value[key]
         return value
+    artifact_specs = {
+        "bas08-viewport.png": get("bas08_capture", "sha256") if "bas08_capture" in data else None,
+        "bas08-camera.png": (data.get("bas08_capture") or {}).get("camera_sha256"),
+        "bas05-scene.blend": data.get("scene_blend_sha256"),
+    }
+    artifacts = []
+    integrity = True
+    for name, expected in artifact_specs.items():
+        asset = path.parent / name
+        if not asset.is_file() or not isinstance(expected, str) or len(expected) != 64:
+            integrity = False
+            continue
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+        if digest != expected or asset.stat().st_size < 1000:
+            integrity = False
+        artifacts.append({"name": name, "sha256": digest,
+                          "size": asset.stat().st_size, "matches_source": digest == expected})
     predicates = [
         ("handshake", lambda: get("handshake", "blender_version").startswith("4.5.15")),
         ("inspect", lambda: bool(get("scene_id"))),
         ("create_transform_delete", lambda: get("bas07", "delete_passed") and len(get("bas07", "operations")) >= 10),
         ("text_collection", lambda: any(x["op"] == "studio_manage_collection" for x in get("bas07", "operations")) and any(x["key"] == "bas07-title" for x in get("bas07", "operations"))),
-        ("viewport_camera_png", lambda: len(get("bas08_capture", "sha256")) == 64 and len(get("bas08_capture", "camera_sha256")) == 64),
+        ("viewport_camera_png", lambda: integrity and len(get("bas08_capture", "sha256")) == 64 and len(get("bas08_capture", "camera_sha256")) == 64),
         ("save_and_reopen", lambda: get("bas12_save", "reopen") == "passed" and get("bas12_open", "socket_kept_alive")),
         ("invalid_args", lambda: get("invalid_error") == "invalid_input"),
         ("disconnect_reconnect", lambda: get("bas09_reconnect", "fresh_stdio_processes") == 2 and get("bas09_reconnect", "no_duplicate_side_effect")),
@@ -55,7 +72,7 @@ def gui(path):
         ("permission_denied", lambda: get("bas09_socket_cases", "permission_denied") and get("bas09_socket_cases", "unauthorized")),
         ("100_commands", lambda: get("bas06_stress", "requests") == 100 and get("bas06_stress", "creates") == 50 and get("bas06_stress", "inspects") == 50),
         ("out_of_band_gui_changes", lambda: len(get("bas07_out_of_band_gui")) == 5 and all(x["revision_bumped"] for x in get("bas07_out_of_band_gui"))),
-        ("independent_headless_reopen", lambda: get("bas08_binding", "headless_reopen_passed") and get("bas12_snapshot", "reopen") == "passed"),
+        ("independent_headless_reopen", lambda: integrity and get("bas08_binding", "headless_reopen_passed") and get("bas12_snapshot", "reopen") == "passed"),
     ]
     cases = []
     for name, predicate in predicates:
@@ -64,11 +81,8 @@ def gui(path):
         except (KeyError, ValueError, IndexError, TypeError):
             ok = False
         cases.append({"case": name, "status": "PASS" if ok else "FAIL"})
-    artifacts = []
-    for name in ("bas08-viewport.png", "bas08-camera.png", "bas05-scene.blend"):
-        asset = path.parent / name
-        if asset.is_file():
-            artifacts.append({"name": name, "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(), "size": asset.stat().st_size})
+    if expected_sha is not None and data.get("source_commit") != expected_sha:
+        cases.append({"case": "expected_head_sha", "status": "FAIL"})
     return {"source_commit": data.get("source_commit"),
             "environment": {key: data.get(key) for key in ("blender_version", "gateway_python", "client", "display")},
             "case_count": len(cases), "passed": sum(x["status"] == "PASS" for x in cases),
@@ -83,11 +97,16 @@ def main():
     parser.add_argument("kind", choices=("pytest", "gui"))
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-sha", help="Expected checked-out PR head SHA for GUI report")
     args = parser.parse_args()
-    result = skips(args.input) if args.kind == "pytest" else gui(args.input)
+    result = skips(args.input) if args.kind == "pytest" else gui(args.input, expected_sha=args.expected_sha)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
     print("BAS09_REPORT", args.kind, result.get("total_skipped", result.get("passed")))
+    if args.kind == "gui":
+        print("BAS09_EVIDENCE", json.dumps(result, ensure_ascii=False))
+    else:
+        print("BAS09_SKIPPED_CATEGORIES", json.dumps(result["categories"], sort_keys=True))
     if args.kind == "gui" and result["failed"]:
         raise SystemExit(1)
 

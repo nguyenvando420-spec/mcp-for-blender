@@ -33,3 +33,14 @@ def test_gui_missing_evidence_fails_closed(tmp_path):
     assert manifest["case_count"] >= 10
     assert manifest["failed"] >= 10
     assert manifest["human_mouse_gui"] == "NOT_TESTED"
+
+
+def test_gui_wrong_sha_rejected_and_missing_artifacts_fail(tmp_path):
+    data = tmp_path / "bas05-e2e.json"
+    data.write_text(json.dumps({"source_commit": "a" * 40,
+                                "blender_version": "4.5.15"}))
+    outcome = gui(data, expected_sha="b" * 40)
+    assert any(x["case"] == "expected_head_sha" and x["status"] == "FAIL"
+               for x in outcome["cases"])
+    assert outcome["failed"] > 0
+    assert outcome["artifacts"] == []
