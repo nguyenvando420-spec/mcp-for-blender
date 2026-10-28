@@ -121,6 +121,22 @@ def main():
             variant = {"kind": "geometry_nodes", "preset": "linear_array", "count": 5,
                        "offset": [2, 0, 0]}
         server.studio_assign_material_v1(sid, rev, "bas10-mod-" + str(index), oid, variant)
+    # Direct edits outside MCP still need BAS-08 revision invalidation for
+    # known BAS-10 modifiers, including the Geometry Nodes preset inputs.
+    _, sid, rev = server._studio_scene_context_v1()
+    bevel = bpy.data.objects["BAS10_Red"].modifiers["BAS10_Bevel"]
+    initial_width = bevel.width
+    bevel.width += 0.01
+    assert server._studio_scene_context_v1()[2] == rev + 1
+    bevel.width = initial_width
+    _, _, rev = server._studio_scene_context_v1()
+    line = next(n for n in bpy.data.objects["BAS10_Green"].modifiers["BAS10_LinearArray"].node_group.nodes
+                if n.bl_idname == "GeometryNodeMeshLine")
+    line.inputs["Count"].default_value = 6
+    assert server._studio_scene_context_v1()[2] == rev + 1
+    line.inputs["Count"].default_value = 5
+    server._studio_scene_context_v1()
+
     # CPU-only, camera-based color preview with real geometry evaluations.
     bpy.ops.object.camera_add(location=(9, -16, 12))
     camera = bpy.context.object
