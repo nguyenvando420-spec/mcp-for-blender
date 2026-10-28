@@ -2959,6 +2959,8 @@ class BlenderMCPServer:
             obj = self._bas07_find(scene, object_id)
             if obj.library is not None or obj.data is None or obj.data.library is not None:
                 raise ValueError("permission_denied: linked/empty object")
+            if any(other != scene for other in getattr(obj, "users_scene", [])):
+                raise ValueError("permission_denied: object is shared by multiple scenes")
             if obj.type != "MESH":
                 raise ValueError("invalid_input: geometry operation requires MESH")
             if kind == "pbr":
