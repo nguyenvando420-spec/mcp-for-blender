@@ -2290,6 +2290,28 @@ class BlenderMCPServer:
                  vec(obj.location), vec(obj.rotation_euler), vec(obj.scale),
                  obj.parent.name_full if obj.parent else None,
                  sorted(col.name_full for col in obj.users_collection)])
+            # BAS-10 known modifier inputs also belong to the scene
+            # fingerprint. A direct GUI edit must invalidate old revisions
+            # and previously approved destructive-operation previews.
+            if len(obj.modifiers) > 128:
+                raise ValueError("conflict: too many modifiers for tracked preview")
+            for mod in obj.modifiers:
+                value = ["modifier", mod.name, mod.type]
+                if mod.type == "BEVEL":
+                    value.extend([float(mod.width).hex(), int(mod.segments)])
+                elif mod.type == "SUBSURF":
+                    value.extend([int(mod.levels), int(mod.render_levels)])
+                elif mod.type == "NODES" and mod.node_group:
+                    group = mod.node_group
+                    value.append(group.name)
+                    if len(group.nodes) > 128:
+                        raise ValueError("conflict: too many modifier nodes for preview")
+                    for node in sorted(group.nodes, key=lambda node: node.name):
+                        if node.bl_idname == "GeometryNodeMeshLine":
+                            value.extend([
+                                "linear_array", int(node.inputs["Count"].default_value),
+                                vec(node.inputs["Offset"].default_value)])
+                add(value)
             data = obj.data
             if obj.type == "MESH" and data is not None:
                 total_vertices += len(data.vertices)
