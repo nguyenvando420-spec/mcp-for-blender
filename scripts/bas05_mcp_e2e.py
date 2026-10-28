@@ -636,6 +636,55 @@ async def accept(port, record):
                 "no_viewport": no_view["error"]["code"],
                 "restored_original_scene": True}
 
+            # BAS-10 through the actual MCP stdio -> authenticated socket
+            # -> Blender GUI main-thread dispatcher, not a direct Python call.
+            bas10_operations = []
+            async def bas10_send(spec, key, target=cube_uuid):
+                nonlocal basrev
+                req = {"operation": "studio_assign_material",
+                       "request_id": str(uuid4()), "effect_scope": "scene",
+                       "scene_id": newid, "scene_revision": basrev,
+                       "idempotency_key": key, "object_id": target, "spec": spec}
+                reply = unpack(await client.call_tool("studio_assign_material", {"request": req}))
+                return req, reply
+
+            assert "studio_assign_material" in toolset
+            assert "studio_assign_material" in handshake["operations"]
+            for material_spec, key in (
+                    ({"kind": "pbr", "base_color": [0.12, 0.58, 0.9, 1],
+                      "metallic": 0.3, "roughness": 0.4}, "bas10-gui-pbr"),
+                    ({"kind": "bevel", "width": 0.15, "segments": 3}, "bas10-gui-bevel"),
+                    ({"kind": "geometry_nodes", "preset": "linear_array", "count": 3,
+                      "offset": [1.5, 0, 0]}, "bas10-gui-array")):
+                raw, result10 = await bas10_send(material_spec, key)
+                assert result10["status"] == "succeeded", (key, result10)
+                assert result10["scene_revision"] == basrev + 1
+                assert result10["result"]["scene_diff"]["updated"] == [cube_uuid]
+                basrev += 1
+                again = unpack(await client.call_tool("studio_assign_material", {"request": {
+                    **raw, "request_id": str(uuid4())}}))
+                assert again["status"] == "succeeded" and again["scene_revision"] == basrev
+                assert again["result"]["summary"] == "Idempotent replay", again
+                bas10_operations.append({"kind": material_spec["kind"], "revision": basrev,
+                                         "replay_safe": True})
+            _, missing10 = await bas10_send(
+                {"kind": "subdivision", "levels": 2}, "bas10-missing", str(uuid4()))
+            assert missing10["error"]["code"] == "object_not_found", missing10
+            _, invalid10 = await bas10_send(
+                {"kind": "geometry_nodes", "preset": "arbitrary-code", "count": 3,
+                 "offset": [1, 0, 0]}, "bas10-invalid-graph")
+            assert invalid10["error"]["code"] == "invalid_input", invalid10
+            gui10 = unpack(await client.call_tool("studio_scene_inspect", {"request": {
+                "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                "effect_scope": "read", "scene_id": newid,
+                "scene_revision": basrev, "object_id": cube_uuid, "limit": 1}}))
+            assert gui10["status"] == "succeeded", gui10
+            rows10 = json.loads(gui10["result"]["summary"])["objects"]
+            assert rows10[0]["materials"][-1]["material_id"], rows10
+            record["bas10_gui"] = {"operations": bas10_operations, "uuid": cube_uuid,
+                                   "unknown_id_denied": True, "arbitrary_graph_denied": True,
+                                   "material_id_exposed": True, "last_revision": basrev}
+
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 53,
                                        "after_revision": rev + 54,
                                        "backup_id": restored["result"]["snapshot_id"]}

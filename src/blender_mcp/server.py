@@ -2406,6 +2406,12 @@ def studio_manage_collection(request: dict) -> dict:
 
 
 @mcp.tool()
+def studio_assign_material(request: dict) -> dict:
+    """Assign a bounded PBR material or apply Bevel/Subdivision/linear-array Geometry Nodes."""
+    return _studio_gateway().invoke(request, "studio_assign_material")
+
+
+@mcp.tool()
 def studio_delete_object(request: dict) -> dict:
     """Delete only with bound confirmation and verified pre-delete snapshots."""
     return _studio_gateway().invoke(request, "studio_delete_object")

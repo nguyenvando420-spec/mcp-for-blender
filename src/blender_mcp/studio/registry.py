@@ -33,6 +33,7 @@ HANDLERS = {
     "studio_create_object": "studio_create_object_v1",
     "studio_set_transform": "studio_set_transform_v1",
     "studio_manage_collection": "studio_manage_collection_v1",
+    "studio_assign_material": "studio_assign_material_v1",
     "studio_delete_object": "studio_delete_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
     "studio_scene_save": "studio_scene_snapshot_v1",
@@ -40,7 +41,7 @@ HANDLERS = {
     "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect", "studio_capture_viewport"})
-MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection"})
+MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection", "studio_assign_material"})
 
 
 def visible_studio_tools(profile):
@@ -55,12 +56,44 @@ def visible_studio_tools(profile):
     return frozenset()
 
 
+def _preflight_bas10_texture(req, policy):
+    """Offline-only, bounded PBR texture: verified before Blender gets a path."""
+    from ..security_policy import canonical_allowed_file
+    if req.operation != "studio_assign_material" or req.spec.kind != "pbr":
+        return None
+    uri = req.spec.texture_uri
+    if uri is None:
+        return None
+    if not uri.startswith("file://"):
+        raise PolicyDenied("BAS-10 accepts only offline file textures")
+    path = canonical_allowed_file(uri, policy.read_roots, writing=False)
+    if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise PolicyDenied("BAS-10 texture format is not allowlisted")
+    if path.stat().st_size > 32 * 1024 * 1024:
+        raise PolicyDenied("BAS-10 texture exceeds 32 MiB")
+    # No-follow final component and a short bounded read; root is private
+    # single-writer for the supported Linux/POSIX profile.
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        with os.fdopen(fd, "rb") as stream:
+            content = stream.read(32 * 1024 * 1024 + 1)
+    except Exception:
+        raise
+    if len(content) > 32 * 1024 * 1024 or hashlib.sha256(content).hexdigest() != req.spec.texture_sha256:
+        raise PolicyDenied("BAS-10 texture missing, changed or checksum mismatch")
+    return path.as_uri()
+
+
 def _validate_numeric_bounds(req):
     """Second-line limits on top of BAS-03's strict wire types.
 
     These limits are additive runtime policy; canonical v1 JSON Schema remains
     unchanged until an explicit contract-version/schema regeneration.
     """
+    if req.operation == "studio_assign_material" and req.spec.kind == "geometry_nodes":
+        offset = req.spec.offset
+        if any(not math.isfinite(v) or abs(v) > 1000.0 for v in offset):
+            raise ValueError("invalid_input: Geometry Nodes offset outside +/-1000")
     if req.operation not in ("studio_create_object", "studio_set_transform"):
         return
     for field, limit in (("location", 100000.0), ("rotation_euler", 1000.0),
@@ -106,7 +139,8 @@ class StudioGateway:
                             | ({"object-transforms-v1"} if "studio_set_transform" in available else set())
                             | ({"collections-v1"} if "studio_manage_collection" in available else set())
                             | ({"confirmed-delete-v1"} if "studio_delete_object" in available else set())
-                            | ({"offscreen-capture-v1"} if "studio_capture_viewport" in available else set()))
+                            | ({"offscreen-capture-v1"} if "studio_capture_viewport" in available else set())
+                            | ({"pbr-modifiers-geometry-preset-v1"} if "studio_assign_material" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -179,6 +213,7 @@ class StudioGateway:
             caps = self.capabilities()
             ensure_supported(req, caps)
             _validate_numeric_bounds(req)
+            texture_uri = _preflight_bas10_texture(req, self.policy)
             if req.operation == "studio_scene_inspect":
                 binding = req.bind_missing_ids
                 if binding and "stable-id-binding-v1" not in caps.features:
@@ -441,6 +476,29 @@ class StudioGateway:
                     scene_diff=SceneDiff(created=[ident] if req.action == "create" else [],
                                          updated=[] if req.action == "create" else [ident]),
                     summary="Idempotent replay" if reply.get("replayed") else req.action,
+                )
+            elif req.operation == "studio_assign_material":
+                spec = req.spec.model_dump(mode="json")
+                if texture_uri is not None:
+                    spec["texture_uri"] = texture_uri
+                reply = self.bridge(HANDLERS[req.operation], {
+                    "scene_id": str(req.scene_id),
+                    "scene_revision": req.scene_revision,
+                    "idempotency_key": req.idempotency_key,
+                    "object_id": str(req.object_id),
+                    "spec": spec,
+                }, False)
+                if reply.get("object_id") != str(req.object_id):
+                    raise ValueError("conflict: material operation reply mismatch")
+                ident = UUID(reply["object_id"])
+                obj = ObjectRef(id=ident, name=reply["name"], kind="object")
+                material_id = reply.get("material_id")
+                if material_id:
+                    UUID(material_id)
+                result = ResultPayload(
+                    objects=[obj], scene_diff=SceneDiff(updated=[ident]),
+                    summary=("Idempotent replay" if reply.get("replayed") else
+                             req.spec.kind + (": " + material_id if material_id else "")),
                 )
             elif req.operation == "studio_delete_object":
                 from .snapshot_store import SnapshotStore, SnapshotError
