@@ -1491,7 +1491,8 @@ class BlenderMCPServer:
         if cmd_type in self.READ_COMMANDS:
             return True, ""
         if self.profile == "studio-local" and (cmd_type in ("studio_create_object_v1", "studio_create_text_v1",
-                "studio_set_transform_v1", "studio_manage_collection_v1") or
+                "studio_set_transform_v1", "studio_manage_collection_v1",
+                "studio_assign_material_v1") or
                 (cmd_type == "studio_delete_object_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")
                  and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32) or
                 (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")) or
@@ -1712,6 +1713,7 @@ class BlenderMCPServer:
             "studio_create_text_v1": self.studio_create_text_v1,
             "studio_set_transform_v1": self.studio_set_transform_v1,
             "studio_manage_collection_v1": self.studio_manage_collection_v1,
+            "studio_assign_material_v1": self.studio_assign_material_v1,
             "studio_delete_object_v1": self.studio_delete_object_v1,
             "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
             "studio_scene_restore_v1": self.studio_scene_restore_v1,
@@ -1829,6 +1831,7 @@ class BlenderMCPServer:
                 "studio_create_text_v1",
                 "studio_set_transform_v1",
                 "studio_manage_collection_v1",
+                "studio_assign_material_v1",
                 "studio_delete_object_v1",
                 "studio_scene_snapshot_v1",
                 "studio_scene_restore_v1",
@@ -2859,6 +2862,155 @@ class BlenderMCPServer:
         return self._bas07_execute("manage_collection", scene_id, scene_revision,
                                    idempotency_key,
                                    [action, name, collection_id, object_id], apply)
+
+
+    def studio_assign_material_v1(self, scene_id, scene_revision, idempotency_key,
+                                  object_id, spec):
+        """BAS-10 fixed Blender operations; rejects arbitrary node graph code."""
+        if not isinstance(spec, dict) or spec.get("kind") not in (
+                "pbr", "bevel", "subdivision", "geometry_nodes"):
+            raise ValueError("invalid_input: unknown material/geometry variant")
+        kind = spec["kind"]
+        expected = {
+            "pbr": {"kind", "base_color", "metallic", "roughness",
+                    "texture_uri", "texture_sha256"},
+            "bevel": {"kind", "width", "segments"},
+            "subdivision": {"kind", "levels"},
+            "geometry_nodes": {"kind", "preset", "count", "offset"},
+        }[kind]
+        if set(spec) - expected:
+            raise ValueError("invalid_input: unexpected spec fields")
+        object_id = self._bas07_uuid(object_id)
+        def finite(v, minimum, maximum):
+            return type(v) in (float, int) and math.isfinite(v) and minimum <= v <= maximum
+        texture_path = None
+        if kind == "pbr":
+            color = spec.get("base_color")
+            if not isinstance(color, (list, tuple)) or len(color) != 4 or not all(
+                    finite(v, 0, 1) for v in color):
+                raise ValueError("invalid_input: PBR base_color")
+            if not finite(spec.get("metallic"), 0, 1) or not finite(spec.get("roughness"), 0, 1):
+                raise ValueError("invalid_input: PBR metallic/roughness")
+            uri, checksum = spec.get("texture_uri"), spec.get("texture_sha256")
+            if (uri is None) != (checksum is None):
+                raise ValueError("invalid_input: texture checksum required")
+            if uri is not None:
+                from pathlib import Path
+                from urllib.parse import urlsplit, unquote
+                parsed = urlsplit(uri)
+                root_value = os.getenv("BLENDER_MCP_STUDIO_ROOT")
+                if not root_value or parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+                    raise ValueError("permission_denied: texture root")
+                root = Path(root_value).resolve(strict=True)
+                raw = Path(unquote(parsed.path))
+                path = raw.resolve(strict=True)
+                if (not raw.is_absolute() or ".." in raw.parts
+                        or not path.is_relative_to(root)
+                        or not raw.is_relative_to(root)
+                        or any(p.is_symlink() for p in [raw, *raw.parents] if p != root)
+                        or path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp")
+                        or path.stat().st_size > 32 * 1024 * 1024):
+                    raise ValueError("permission_denied: texture path/size")
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(fd, "rb") as stream:
+                    contents = stream.read(32 * 1024 * 1024 + 1)
+                if (len(contents) > 32 * 1024 * 1024
+                        or hashlib.sha256(contents).hexdigest() != checksum):
+                    raise ValueError("conflict: texture checksum changed")
+                texture_path = str(path)
+        elif kind == "bevel":
+            if not finite(spec.get("width"), 0.000001, 10):
+                raise ValueError("invalid_input: bevel width")
+            if type(spec.get("segments")) is not int or not 1 <= spec["segments"] <= 16:
+                raise ValueError("invalid_input: bevel segments")
+        elif kind == "subdivision":
+            if type(spec.get("levels")) is not int or not 1 <= spec["levels"] <= 3:
+                raise ValueError("invalid_input: subdivision levels")
+        else:
+            offset = spec.get("offset")
+            if (spec.get("preset") != "linear_array"
+                    or type(spec.get("count")) is not int or not 1 <= spec["count"] <= 100
+                    or not isinstance(offset, (list, tuple)) or len(offset) != 3
+                    or not all(finite(v, -1000, 1000) for v in offset)):
+                raise ValueError("invalid_input: linear_array bounds")
+        def apply(scene):
+            obj = self._bas07_find(scene, object_id)
+            if obj.library is not None or obj.data is None or obj.data.library is not None:
+                raise ValueError("permission_denied: linked/empty object")
+            if obj.type != "MESH":
+                raise ValueError("invalid_input: geometry operation requires MESH")
+            if kind == "pbr":
+                # Never change other objects through a shared mesh datablock.
+                if obj.data.users > 1:
+                    raise ValueError("conflict: shared mesh datablock")
+                mat = bpy.data.materials.new("BAS10_PBR")
+                image = None
+                try:
+                    mat.use_nodes = True
+                    mat.diffuse_color = tuple(color)
+                    shader = mat.node_tree.nodes.get("Principled BSDF")
+                    if shader is None:
+                        raise ValueError("conflict: missing Principled BSDF")
+                    shader.inputs["Base Color"].default_value = tuple(color)
+                    shader.inputs["Metallic"].default_value = float(spec["metallic"])
+                    shader.inputs["Roughness"].default_value = float(spec["roughness"])
+                    if texture_path:
+                        image = bpy.data.images.load(texture_path, check_existing=False)
+                        image.pack()
+                        tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+                        tex.image = image
+                        mat.node_tree.links.new(tex.outputs["Color"], shader.inputs["Base Color"])
+                        mat["bas10_texture_sha256"] = checksum
+                        mat["bas10_texture_source"] = uri
+                        mat["bas10_texture_license"] = "user-provided; license unverified"
+                    material_id = str(uuid.uuid4())
+                    mat["_bas08_material_id"] = material_id
+                    obj.data.materials.append(mat)
+                except Exception:
+                    bpy.data.materials.remove(mat, do_unlink=True)
+                    if image is not None and image.users == 0:
+                        bpy.data.images.remove(image)
+                    raise
+                return object_id, obj.name
+            if kind == "bevel":
+                mod = obj.modifiers.new("BAS10_Bevel", "BEVEL")
+                mod.width = float(spec["width"])
+                mod.segments = spec["segments"]
+            elif kind == "subdivision":
+                mod = obj.modifiers.new("BAS10_Subdivision", "SUBSURF")
+                mod.levels = spec["levels"]
+                mod.render_levels = spec["levels"]
+            else:
+                group = bpy.data.node_groups.new("BAS10_LinearArray", "GeometryNodeTree")
+                try:
+                    group.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+                    group.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+                    nodes = group.nodes
+                    source = nodes.new("NodeGroupInput")
+                    output = nodes.new("NodeGroupOutput")
+                    mesh_line = nodes.new("GeometryNodeMeshLine")
+                    mesh_line.mode = "OFFSET"
+                    mesh_line.inputs["Count"].default_value = spec["count"]
+                    mesh_line.inputs["Offset"].default_value = tuple(offset)
+                    instance = nodes.new("GeometryNodeInstanceOnPoints")
+                    realize = nodes.new("GeometryNodeRealizeInstances")
+                    group.links.new(mesh_line.outputs["Mesh"], instance.inputs["Points"])
+                    group.links.new(source.outputs["Geometry"], instance.inputs["Instance"])
+                    group.links.new(instance.outputs["Instances"], realize.inputs["Geometry"])
+                    group.links.new(realize.outputs["Geometry"], output.inputs["Geometry"])
+                    try:
+                        mod = obj.modifiers.new("BAS10_LinearArray", "NODES")
+                        mod.node_group = group
+                    except Exception:
+                        bpy.data.node_groups.remove(group, do_unlink=True)
+                        raise
+                except Exception:
+                    if group.name in bpy.data.node_groups and group.users == 0:
+                        bpy.data.node_groups.remove(group)
+                    raise
+            return object_id, obj.name
+        return self._bas07_execute("assign_material", scene_id, scene_revision,
+                                   idempotency_key, [object_id, spec], apply)
 
     def studio_delete_object_v1(self, scene_id, scene_revision, object_id,
                                 snapshot_id, backup_snapshot_id, confirmation_token):
