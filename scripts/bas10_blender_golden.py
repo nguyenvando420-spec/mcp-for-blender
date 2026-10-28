@@ -10,6 +10,7 @@ import sys
 import uuid
 
 import bpy
+from mathutils import Vector
 
 
 def verify(path):
@@ -39,6 +40,18 @@ def verify(path):
     assert bpy.data.objects["BAS10_Red"].data.materials[-1]["bas10_texture_sha256"]
     assert any(image.packed_file for image in bpy.data.images), "Texture not packed"
     assert len({tuple(v["color"]) for v in values.values()}) == 3
+    # Verify actual evaluated geometry, not merely the node definitions.
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated_counts = {}
+    for obj in (red, blue, green):
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh()
+        assert mesh is not None
+        evaluated_counts[obj.name] = len(mesh.vertices)
+        evaluated.to_mesh_clear()
+    assert evaluated_counts["BAS10_Red"] > 8, evaluated_counts
+    assert evaluated_counts["BAS10_Blue"] > 8, evaluated_counts
+    assert evaluated_counts["BAS10_Green"] >= 40, evaluated_counts
     return values
 
 
@@ -51,6 +64,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     assert bpy.app.version_string.split()[0] == "4.5.15", bpy.app.version_string
     if args.reopen:
+        assert bpy.data.filepath == str(out / "bas10.blend"), "Independent Blender must actually load saved BLEND"
+        assert not (out / "bas10-local.png").exists(), "Original texture path must be absent at reopen"
         values = verify(out / "bas10.blend")
         before = json.loads((out / "bas10-before.json").read_text())
         assert values == before, (values, before)
@@ -99,23 +114,51 @@ def main():
             variant = {"kind": "geometry_nodes", "preset": "linear_array", "count": 5,
                        "offset": [2, 0, 0]}
         server.studio_assign_material_v1(sid, rev, "bas10-mod-" + str(index), oid, variant)
+    # CPU-only, camera-based color preview with real geometry evaluations.
+    bpy.ops.object.camera_add(location=(9, -16, 12))
+    camera = bpy.context.object
+    camera.rotation_euler = (Vector((2, 0, 1)) - camera.location).to_track_quat("-Z", "Y").to_euler()
+    camera.data.type = "ORTHO"
+    camera.data.ortho_scale = 22
+    scene.camera = camera
+    bpy.ops.object.light_add(type="AREA", location=(0, -4, 11))
+    bpy.context.object.data.energy = 2100
+    bpy.context.object.data.shape = "DISK"
+    bpy.context.object.data.size = 10
+    scene.render.engine = "CYCLES"
+    scene.cycles.device = "CPU"
+    scene.cycles.samples = 8
+    for view_layer in scene.view_layers:
+        if hasattr(view_layer, "cycles"):
+            view_layer.cycles.use_denoising = False
+    scene.render.resolution_x = 480
+    scene.render.resolution_y = 270
+    scene.render.resolution_percentage = 100
+    scene.view_settings.view_transform = "Standard"
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.filepath = str(out / "bas10-preview.png")
     values = verify(out / "bas10.blend")
     (out / "bas10-before.json").write_text(json.dumps(values))
     bpy.ops.wm.save_as_mainfile(filepath=str(out / "bas10.blend"))
-    bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-    bpy.context.scene.render.resolution_x = 320
-    bpy.context.scene.render.resolution_y = 180
-    bpy.context.scene.render.resolution_percentage = 100
-    bpy.context.scene.render.image_settings.file_format = "PNG"
-    # Viewport does not require user-facing external assets or a full camera scene.
+    bpy.ops.render.render(write_still=True)
+    preview = out / "bas10-preview.png"
+    assert preview.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a"))
+    assert preview.stat().st_size > 4000, "Blank/missing render preview"
+    # Remove the original file at its source URI: a reopened BLEND must use
+    # the packed texture, not silently succeed because the local file survived.
+    asset.rename(out / "bas10-source-archived.png")
     (out / "bas10-environment.json").write_text(json.dumps(
-        {"blender": bpy.app.version_string, "python": sys.version, "mode": "headless"}))
+        {"blender": bpy.app.version_string, "python": sys.version, "mode": "headless",
+         "render_engine": "CYCLES", "samples": scene.cycles.samples,
+         "texture_sha256": sha, "texture_license": "self-generated-test-image",
+         "texture_source": "generated in this test; archived after save"}))
     cmd = [bpy.app.binary_path, "--background", "--factory-startup",
-           "--disable-autoexec", "--python-exit-code", "1", "--python",
-           str(Path(__file__).resolve()), "--", "--output-dir", str(out), "--reopen"]
+           "--disable-autoexec", "--python-exit-code", "1", str(out / "bas10.blend"),
+           "--python", str(Path(__file__).resolve()),
+           "--", "--output-dir", str(out), "--reopen"]
     subprocess.run(cmd, check=True, timeout=120)
-    files = ["bas10.blend", "bas10-before.json", "bas10-reopen.json",
-             "bas10-environment.json", "bas10-local.png"]
+    files = ["bas10.blend", "bas10-preview.png", "bas10-before.json", "bas10-reopen.json",
+             "bas10-environment.json", "bas10-source-archived.png"]
     (out / "bas10-checksums.json").write_text(json.dumps({
         name: hashlib.sha256((out / name).read_bytes()).hexdigest() for name in files
     }, indent=2))
