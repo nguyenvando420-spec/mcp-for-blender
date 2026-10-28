@@ -121,6 +121,25 @@ def main():
             variant = {"kind": "geometry_nodes", "preset": "linear_array", "count": 5,
                        "offset": [2, 0, 0]}
         server.studio_assign_material_v1(sid, rev, "bas10-mod-" + str(index), oid, variant)
+    # A shared Blender object must not be modified through one scene while
+    # silently changing another scene that has a different revision.
+    shared_obj = bpy.data.objects["BAS10_Red"]
+    other_scene = bpy.data.scenes.new("BAS10_SharedObjectNegative")
+    other_scene.collection.objects.link(shared_obj)
+    try:
+        _, sid, rev = server._studio_scene_context_v1()
+        try:
+            server.studio_assign_material_v1(
+                sid, rev, "bas10-deny-shared", shared_obj["_bas05_object_id"],
+                {"kind": "bevel", "width": 0.2, "segments": 3})
+        except ValueError as error:
+            assert "permission_denied:" in str(error), error
+        else:
+            raise AssertionError("Shared object mutation must be denied")
+    finally:
+        other_scene.collection.objects.unlink(shared_obj)
+        bpy.data.scenes.remove(other_scene)
+
     # Direct edits outside MCP still need BAS-08 revision invalidation for
     # known BAS-10 modifiers, including the Geometry Nodes preset inputs.
     _, sid, rev = server._studio_scene_context_v1()
