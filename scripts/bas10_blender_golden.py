@@ -82,11 +82,18 @@ def main():
     bpy.ops.object.delete(use_global=False)
     scene = bpy.context.scene
     _, sid, rev = server._studio_scene_context_v1()
-    import base64
+    import struct
+    import zlib
     asset = out / "bas10-local.png"
-    # Tiny valid 1x1 PNG, self-supplied, no external license dependency.
-    asset.write_bytes(base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lYcAAAAASUVORK5CYII="))
+    # Create a known red source texture locally, with no external asset/license.
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(
+            ">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    png = (b"\\x89PNG\\r\\n\\x1a\\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"\\x00" + bytes([225, 45, 45, 255])))
+           + chunk(b"IEND", b""))
+    asset.write_bytes(png)
     sha = hashlib.sha256(asset.read_bytes()).hexdigest()
     for index, (name, color) in enumerate((
             ("BAS10_Red", (0.8, 0.1, 0.1, 1)),
@@ -144,6 +151,23 @@ def main():
     preview = out / "bas10-preview.png"
     assert preview.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a"))
     assert preview.stat().st_size > 4000, "Blank/missing render preview"
+    rendered = bpy.data.images.load(str(preview), check_existing=False)
+    assert tuple(rendered.size) == (480, 270)
+    pixels = rendered.pixels[:]
+    visible = {"red": 0, "green": 0, "blue": 0}
+    for i in range(0, len(pixels), 16):
+        red, green, blue = pixels[i:i + 3]
+        if red > 0.08 and red > 1.3 * green and red > 1.3 * blue:
+            visible["red"] += 1
+        elif green > 0.08 and green > 1.3 * red and green > 1.3 * blue:
+            visible["green"] += 1
+        elif blue > 0.08 and blue > 1.3 * red and blue > 1.3 * green:
+            visible["blue"] += 1
+    assert all(count > 5 for count in visible.values()), visible
+    (out / "bas10-preview-analysis.json").write_text(json.dumps({
+        "resolution": [480, 270], "visible_color_samples": visible,
+        "criterion": "Each PBR color has >5 strongly dominant sampled pixels"}))
+    bpy.data.images.remove(rendered)
     # Remove the original file at its source URI: a reopened BLEND must use
     # the packed texture, not silently succeed because the local file survived.
     asset.rename(out / "bas10-source-archived.png")
@@ -158,7 +182,8 @@ def main():
            "--", "--output-dir", str(out), "--reopen"]
     subprocess.run(cmd, check=True, timeout=120)
     files = ["bas10.blend", "bas10-preview.png", "bas10-before.json", "bas10-reopen.json",
-             "bas10-environment.json", "bas10-source-archived.png"]
+             "bas10-environment.json", "bas10-source-archived.png",
+             "bas10-preview-analysis.json"]
     (out / "bas10-checksums.json").write_text(json.dumps({
         name: hashlib.sha256((out / name).read_bytes()).hexdigest() for name in files
     }, indent=2))
