@@ -89,9 +89,9 @@ def main():
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(
             ">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    png = (b"\\x89PNG\\r\\n\\x1a\\n"
+    png = (b"\x89PNG\r\n\x1a\n"
            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(b"\\x00" + bytes([225, 45, 45, 255])))
+           + chunk(b"IDAT", zlib.compress(b"\x00" + bytes([225, 45, 45, 255])))
            + chunk(b"IEND", b""))
     asset.write_bytes(png)
     sha = hashlib.sha256(asset.read_bytes()).hexdigest()
