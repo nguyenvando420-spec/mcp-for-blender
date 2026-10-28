@@ -653,6 +653,95 @@ async def accept(port, record):
                            "toolset": sorted(toolset)})
 
 
+
+def bas09_socket_cases(port):
+    """Real add-on TCP ingress: auth/permission/read-timeout, no side effects."""
+    def send(payload):
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as peer:
+            peer.settimeout(3)
+            peer.sendall((json.dumps(payload) + "\n").encode())
+            return json.loads(peer.recv(8192))
+
+    unauthorized = send({"type": "ping", "auth": "invalid",
+                         "request_id": str(uuid4())})
+    assert unauthorized["code"] == "unauthorized", unauthorized
+    forbidden = send({"type": "execute_code",
+                      "auth": os.environ["BLENDER_MCP_SOCKET_TOKEN"],
+                      "params": {"code": "raise RuntimeError('MUST_NOT_RUN')"},
+                      "request_id": str(uuid4())})
+    assert forbidden["code"] == "permission_denied", forbidden
+    # An incomplete frame is never submitted to the main-thread queue.
+    # This tests a real TCP read deadline, NOT cancellation of a mutation.
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as peer:
+        peer.settimeout(0.1)
+        peer.sendall(b'{"type":"ping"')
+        try:
+            unexpected = peer.recv(8192)
+        except socket.timeout:
+            timed_out = True
+        else:
+            raise AssertionError("Unexpected response to partial frame: " + repr(unexpected))
+    return {"unauthorized": True, "permission_denied": True,
+            "partial_frame_timeout": timed_out,
+            "scope": "incomplete read-only frame; no mutation dispatched"}
+
+
+async def bas09_reconnect_case(port, record):
+    """Two fresh MCP clients against the same live Blender GUI; no duplicate."""
+    env = {**os.environ, "BLENDER_MCP_PROFILE": "studio-local",
+           "BLENDER_HOST": "127.0.0.1", "BLENDER_PORT": str(port),
+           "DISABLE_TELEMETRY": "true"}
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "blender_mcp.server", "--host", "127.0.0.1", "--port", str(port)],
+        env=env, cwd=str(ROOT))
+    async with stdio_client(params) as (reader, writer):
+        async with ClientSession(reader, writer) as client:
+            await client.initialize()
+            handshake = unpack(await client.call_tool("studio_handshake", {}))
+            assert "studio_create_object" in handshake["operations"], handshake
+            before = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "limit": 200}}))
+            assert before["status"] == "succeeded", before
+            before_count = json.loads(before["result"]["summary"])["object_count"]
+            sid, rev = before["scene_id"], before["scene_revision"]
+            original = {"operation": "studio_create_object", "request_id": str(uuid4()),
+                        "effect_scope": "scene", "scene_id": sid,
+                        "scene_revision": rev, "idempotency_key": "bas09-reconnect-once",
+                        "name": "BAS09_Once", "spec": {"kind": "primitive", "primitive": "cube"}}
+            created = unpack(await client.call_tool("studio_create_object",
+                                                    {"request": original}))
+            assert created["status"] == "succeeded", created
+            assert created["scene_revision"] == rev + 1, created
+            oid = created["result"]["objects"][0]["id"]
+    # The first gateway/STDIO process is disconnected at this point.
+    async with stdio_client(params) as (reader, writer):
+        async with ClientSession(reader, writer) as client:
+            await client.initialize()
+            replay = unpack(await client.call_tool("studio_create_object",
+                                                   {"request": original}))
+            assert replay["status"] == "succeeded", replay
+            assert replay["result"]["objects"][0]["id"] == oid, replay
+            assert replay["scene_revision"] == rev + 1, replay
+            assert replay["result"]["summary"] == "Idempotent replay", replay
+            state = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "limit": 200}}))
+            assert state["status"] == "succeeded"
+            assert state["scene_id"] == sid and state["scene_revision"] == rev + 1
+            objects = json.loads(state["result"]["summary"])
+            assert objects["object_count"] == before_count + 1
+            assert len([row for row in objects["objects"] if row["object_id"] == oid]) == 1
+            record["bas09_reconnect"] = {
+                "fresh_stdio_processes": 2, "scene_id": sid,
+                "revision_before": rev, "revision_after": rev + 1,
+                "object_id": oid, "idempotent_replay": True,
+                "no_duplicate_side_effect": True, "gui_responsive": True}
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -701,6 +790,8 @@ def main():
         else:
             raise RuntimeError("Blender GUI socket did not become ready")
         asyncio.run(asyncio.wait_for(accept(port, record), timeout=100))
+        record["bas09_socket_cases"] = bas09_socket_cases(port)
+        asyncio.run(asyncio.wait_for(bas09_reconnect_case(port, record), timeout=40))
         done.write_text("done\n")
         process.wait(timeout=45)
         assert process.returncode == 0, "Blender GUI exit failure"
