@@ -17,7 +17,7 @@ BAS-11 exposes the already documented Studio v1 operations `studio_set_camera` a
 ## Acceptance and remaining gates
 
 - Python gateway tests: `pytest -q tests/test_bas11_camera_light.py`, with observer-denial, schema bounds, optional target/frame-scene, scene-diff and capability tests.
-- Blender 4.5.15 pinned GUI/job CI: `scripts/bas11_blender_golden.py` builds two cameras, three distinct lights, one world and a bounds-framed target; exercises active camera and negative missing target/invalid clipping; saves `bas11.blend` and its SHA-256 and independently reopens it in another Blender process.
+- Blender 4.5.15 pinned GUI/job CI: `scripts/bas11_blender_golden.py` builds two cameras, three distinct lights, one world and a bounds-framed target; exercises active camera and negative missing target/invalid clipping; renders the active camera/world to `bas11-preview.png` using CPU Cycles, records both BLEND/PNG SHA-256 hashes, and independently reopens the BLEND and verifies the preview hash in another Blender process.
 - CI uploads `bas11-golden` in the existing GUI evidence artifact alongside BAS-10 evidence.
-- Manual interactive GUI UAT is distinct from background Blender integration. Real offscreen camera-mode PNG verification, the exact rendered world appearance and desktop mouse-driven UAT remain acceptance requirements; do not mark Done solely because the headless test passes.
+- Manual interactive GUI UAT is distinct from background Blender integration. Offscreen camera-mode viewport capture via the actual MCP/GUI display and desktop mouse-driven UAT remain acceptance requirements (headless Cycles PNG alone does not prove offscreen GPU capture); do not mark Done solely because the headless test passes.
 - No dependency on BAS-10 merging is required; BAS-11 branches from the then-current `main`. Merge only after review, green CI on the final head SHA and an accepted GUI evidence scope.
