@@ -7,6 +7,74 @@ from test_server_threading import _make_server, _free_port
 
 TOKEN = "a" * 32
 
+
+def test_completed_reads_reclaimed_without_replaying_mutations():
+    class Writer:
+        def __init__(self): self.sent = []
+        def sendall(self, data): self.sent.append(json.loads(data))
+
+    server = _make_server()
+    server.running = True
+    server.MAX_REQUESTS = 4
+    calls = []
+    server.execute_command = lambda command: (
+        calls.append(command["type"]) or {"status": "success", "result": {}})
+    client = Writer()
+    mutation = {"type": "studio_set_transform_v1", "auth": TOKEN,
+                "request_id": "retained-mutation", "params": {}}
+    server._receive_command(client, json.dumps(mutation).encode())
+    server._drain_command_queue()
+    for index in range(20):
+        server._receive_command(client, json.dumps({"type": "ping", "auth": TOKEN,
+            "request_id": "read-" + str(index), "params": {}}).encode())
+        server._drain_command_queue()
+        assert len(server._requests) <= 4
+    assert calls.count("ping") == 20
+    assert "retained-mutation" in server._requests
+    server._receive_command(client, json.dumps(mutation).encode())
+    assert client.sent[-1]["status"] == "success"
+    assert calls.count("studio_set_transform_v1") == 1
+    assert server.command_queue.empty()
+
+
+def test_id_binding_is_not_an_evictable_observation():
+    class Writer:
+        def __init__(self): self.sent = []
+        def sendall(self, data): self.sent.append(json.loads(data))
+
+    server = _make_server()
+    server.running = True
+    server.MAX_REQUESTS = 2
+    client = Writer()
+    for rid, kind, params in (
+        ("binding", "studio_scene_inspect_v1", {"bind_missing_ids": True}),
+        ("mutation", "studio_set_transform_v1", {}),
+    ):
+        server._receive_command(client, json.dumps({"type": kind, "auth": TOKEN,
+            "request_id": rid, "params": params}).encode())
+        server._drain_command_queue()
+    server._receive_command(client, json.dumps({"type": "ping", "auth": TOKEN,
+        "request_id": "new-read", "params": {}}).encode())
+    assert client.sent[-1]["code"] == "request_ledger_full"
+    assert set(server._requests) == {"binding", "mutation"}
+
+
+def test_pending_observations_are_not_evicted():
+    class Writer:
+        def __init__(self): self.sent = []
+        def sendall(self, data): self.sent.append(json.loads(data))
+
+    server = _make_server()
+    server.running = True
+    server.MAX_REQUESTS = 1
+    client = Writer()
+    for rid in ("pending-read", "new-read"):
+        server._receive_command(client, json.dumps({"type": "ping", "auth": TOKEN,
+            "request_id": rid, "params": {}}).encode())
+    assert client.sent[-1]["code"] == "request_ledger_full"
+    assert server.command_queue.qsize() == 1
+    assert set(server._requests) == {"pending-read"}
+
 def _request(server, command, pump=True):
     with socket.create_connection(("localhost", server.port), timeout=3) as client:
         client.settimeout(0.03 if pump else 3)

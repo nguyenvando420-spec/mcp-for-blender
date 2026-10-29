@@ -34,3 +34,7 @@ Environment manifest: Blender 4.5.15 pinned, gateway Python 3.11.14/3.12.14; act
 - GUI timer budget is a 10 ms scheduling admission target for four commands; it is not a preemptive timeout for arbitrary bpy operation. Developer-local raw Python remains explicitly unsafe and should never be enabled for untrusted clients.
 
 - BAS-06 handshake now only advertises add-on commands actually allowed by the active socket profile. CI prints each of 10 repeated port rebind cycles with `pytest -s`; successful Python matrix and latest GUI worker E2E must still be checked at the final reviewed SHA.
+
+### BAS-14 detailed-model admission regression
+
+The 512-entry recovery ledger now reclaims only completed observations when capacity is reached. Mutation request IDs, explicit ID-binding inspections and queued/running commands are never evicted. Thus repeated capability and scene inspection reads no longer exhaust a session before a detailed model is built; replay of a retained mutation still returns its original result without executing it again. A ledger containing only protected entries still fails closed with `request_ledger_full`. The tests `test_completed_reads_reclaimed_without_replaying_mutations`, `test_id_binding_is_not_an_evictable_observation` and `test_pending_observations_are_not_evicted` cover these boundaries.

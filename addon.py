@@ -1541,6 +1541,17 @@ class BlenderMCPServer:
         reply = None
         with self._requests_lock:
             previous = self._requests.get(rid) if rid is not None else None
+            if previous is None and rid is not None and len(self._requests) >= self.MAX_REQUESTS:
+                # Completed observations may be recomputed safely. Never
+                # discard mutation identities or queued/running requests:
+                # their replay protection is required to prevent duplicate
+                # edits. Counting every capability/inspect read forever
+                # otherwise stopped detailed models after ~127 mutations.
+                for old_id, entry in list(self._requests.items()):
+                    if entry.get("read_only") and entry["state"] == "completed":
+                        del self._requests[old_id]
+                        if len(self._requests) < self.MAX_REQUESTS:
+                            break
             if previous is not None:
                 if previous["fingerprint"] != fingerprint:
                     reply = self._error("request_id_conflict", rid)
@@ -1563,6 +1574,9 @@ class BlenderMCPServer:
                         self._requests[rid] = {
                             "state": "queued", "fingerprint": fingerprint,
                             "response": None,
+                            "read_only": (kind in self.READ_COMMANDS and not (
+                                kind == "studio_scene_inspect_v1" and
+                                command.get("params", {}).get("bind_missing_ids"))),
                         }
         if reply is not None:
             client.sendall(json.dumps(reply).encode("utf-8"))
