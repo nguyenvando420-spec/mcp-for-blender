@@ -154,7 +154,10 @@ class ArtifactWorker:
         snapshot_path = Path(snapshot)
         if snapshot_path.is_symlink():
             raise ValueError("snapshot_symlink_denied")
-        snapshot = snapshot_path.resolve(strict=True)
+        try:
+            snapshot = snapshot_path.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("snapshot_path_missing") from exc
         if self.root not in snapshot.parents:
             raise ValueError("snapshot_outside_sandbox")
         if not snapshot.is_file() or not 8 <= snapshot.stat().st_size <= MAX_BLEND:
