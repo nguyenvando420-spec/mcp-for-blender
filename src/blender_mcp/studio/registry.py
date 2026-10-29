@@ -262,7 +262,7 @@ class StudioGateway:
                             "formats": sorted(req.formats)}
                     timeout = 600
                 destination = canonical_allowed_file(req.output_uri, self.policy.write_roots,
-                                                     writing=True, overwrite=False)
+                                                     writing=True, overwrite=True)
                 # The job URI is a NEW output directory; no partial files are
                 # ever published and overwrites are not available in this v1.
                 if destination.is_symlink():
