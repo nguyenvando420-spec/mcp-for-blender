@@ -313,7 +313,7 @@ def test_overwrite_destination_mutation_during_child_is_conflict(runtime):
     program = worker.blender.read_text()
     program = program.replace(
         "if snapshot.read_bytes().endswith(b'SLOW'): time.sleep(20)",
-        "if snapshot.read_bytes().endswith(b'SLOW'): time.sleep(20)\\n"
+        "if snapshot.read_bytes().endswith(b'SLOW'): time.sleep(20)\n"
         "if snapshot.read_bytes().endswith(b'PAUSE'): time.sleep(0.8)")
     worker.blender.write_text(program)
     initial = submit(worker,snap)
