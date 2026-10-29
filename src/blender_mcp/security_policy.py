@@ -301,7 +301,8 @@ def verify_resource_confirmation(secret: bytes, token: str, *,
     if len(secret) < 32 or not isinstance(token, str) or not isinstance(resource, str):
         raise PolicyDenied("Missing trusted resource confirmation")
     fields = _confirmation_fields(operation, scene_id, scene_revision,
-                                  snapshot_id if operation != "studio_scene_save" else None)
+                                  snapshot_id if operation not in ("studio_scene_save",
+                                      "studio_render_still", "studio_export_artifacts") else None)
     try:
         raw = base64.b64decode(token + "=" * (-len(token) % 4),
                                altchars=b"-_", validate=True)
