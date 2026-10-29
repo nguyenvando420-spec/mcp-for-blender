@@ -1541,6 +1541,17 @@ class BlenderMCPServer:
         reply = None
         with self._requests_lock:
             previous = self._requests.get(rid) if rid is not None else None
+            if previous is None and rid is not None and len(self._requests) >= self.MAX_REQUESTS:
+                # Completed observations may be recomputed safely. Never
+                # discard mutation identities or queued/running requests:
+                # their replay protection is required to prevent duplicate
+                # edits. Counting every capability/inspect read forever
+                # otherwise stopped detailed models after ~127 mutations.
+                for old_id, entry in list(self._requests.items()):
+                    if entry.get("read_only") and entry["state"] == "completed":
+                        del self._requests[old_id]
+                        if len(self._requests) < self.MAX_REQUESTS:
+                            break
             if previous is not None:
                 if previous["fingerprint"] != fingerprint:
                     reply = self._error("request_id_conflict", rid)
@@ -1563,6 +1574,9 @@ class BlenderMCPServer:
                         self._requests[rid] = {
                             "state": "queued", "fingerprint": fingerprint,
                             "response": None,
+                            "read_only": (kind in self.READ_COMMANDS and not (
+                                kind == "studio_scene_inspect_v1" and
+                                command.get("params", {}).get("bind_missing_ids"))),
                         }
         if reply is not None:
             client.sendall(json.dumps(reply).encode("utf-8"))
@@ -2220,6 +2234,11 @@ class BlenderMCPServer:
         builders[primitive](location=tuple(float(v) for v in location))
         obj = bpy.context.object
         obj.name = name
+        # Curved primitives need interpolated side normals. Keep planar caps
+        # and box faces flat; smoothing a cap creates visible shading spikes.
+        if primitive in ("sphere", "cylinder", "cone"):
+            for polygon in obj.data.polygons:
+                polygon.use_smooth = primitive == "sphere" or len(polygon.vertices) <= 4
         obj_id = str(uuid.uuid4())
         obj["_bas05_object_id"] = obj_id
         revision += 1
@@ -2377,7 +2396,9 @@ class BlenderMCPServer:
         target = self._bas12_snapshot_path(snapshot_id, path)
         # bpy saves this COPY without changing the current .blend path.
         # This folder is private, UUID-addressed and preallocated by gateway.
-        result = bpy.ops.wm.save_as_mainfile(filepath=str(target), copy=True)
+        # Snapshot verification requires the raw BLENDER header, independent
+        # of the user's file-compression preference.
+        result = bpy.ops.wm.save_as_mainfile(filepath=str(target), copy=True, compress=False)
         if "FINISHED" not in result:
             raise RuntimeError("Snapshot save did not finish")
         sha = hashlib.sha256()
@@ -2645,8 +2666,25 @@ class BlenderMCPServer:
         source, manifest = self._bas12_read_snapshot(snapshot_id, path, sha256)
         if manifest["scene_id"] != current_id:
             raise ValueError("conflict: snapshot belongs to another scene")
+        # Keep the library loader's positional source-name mapping. Stable
+        # object UUIDs do not cover unbound GUI objects, collections, worlds,
+        # materials or geometry datablocks; Blender suffixes all of these on
+        # append when the previous scene is retained for rollback.
+        kinds = ("scenes", "objects", "collections", "meshes", "curves",
+                 "metaballs", "armatures", "cameras", "lights", "materials",
+                 "worlds", "node_groups", "images", "actions", "textures",
+                 "lattices", "volumes", "grease_pencils")
+        source_names = {}
         with bpy.data.libraries.load(str(source), link=False) as (available, imported):
-            imported.scenes = list(available.scenes)
+            for kind in kinds:
+                if hasattr(available, kind) and hasattr(imported, kind):
+                    names = list(getattr(available, kind))
+                    if len(names) > 10000:
+                        raise ValueError("capability_unavailable: snapshot namespace too large")
+                    # Blender replaces data_to list entries with ID objects.
+                    # Keep an independent immutable copy of the source names.
+                    source_names[kind] = tuple(names)
+                    setattr(imported, kind, list(names))
         target = next((candidate for candidate in imported.scenes
                        if candidate and candidate.get("_bas05_scene_id") == current_id), None)
         if target is None:
@@ -2657,32 +2695,63 @@ class BlenderMCPServer:
         # scene changes. A crash after consumption returns UNKNOWN, no replay.
         self._bas12_consume_confirmation(nonce)
         original = bpy.context.window.scene
-        # Blender library import auto-suffixes colliding object names. The
-        # immutable snapshot inventory carries the original stable UUID/name
-        # mapping; release those names on the old (retained) scene before
-        # applying them to the imported scene.
-        name_index = {str(item["object_id"]): item["name"]
-                      for item in manifest.get("scene_inventory", [])
-                      if isinstance(item, dict) and "object_id" in item and "name" in item}
+        # Restrict renaming to the restored scene's dependency graph. Other
+        # imported scenes can exist in a snapshot and must not take its names.
+        dependencies = {}
+        for datablock, users in bpy.data.user_map().items():
+            for user in users:
+                dependencies.setdefault(user, set()).add(datablock)
+        reachable = set()
+        pending = [target]
+        while pending:
+            datablock = pending.pop()
+            if datablock not in reachable:
+                reachable.add(datablock)
+                pending.extend(dependencies.get(datablock, ()))
+            if len(reachable) > 50000:
+                raise ValueError("capability_unavailable: snapshot dependency graph too large")
+        names_to_restore = []
+        for kind, names in source_names.items():
+            loaded = getattr(imported, kind)
+            if len(loaded) != len(names):
+                raise ValueError("conflict: incomplete snapshot name mapping")
+            container = getattr(bpy.data, kind)
+            for name, datablock in zip(names, loaded):
+                if datablock is not None and datablock in reachable:
+                    names_to_restore.append((container, datablock, name))
         renamed_previous = []
+        renamed_imported = []
         try:
-            for obj in original.objects:
-                oid = str(obj.get("_bas05_object_id", ""))
-                if oid in name_index and obj.name == name_index[oid]:
-                    renamed_previous.append((obj, obj.name))
-                    obj.name = "__BAS12_previous_" + uuid.uuid4().hex
-            for obj in target.objects:
-                oid = str(obj.get("_bas05_object_id", ""))
-                if oid in name_index:
-                    obj.name = name_index[oid]
+            # Free all imported names first, including legitimate .001 names,
+            # so assignment order cannot cause another automatic suffix.
+            for _, datablock, _ in names_to_restore:
+                renamed_imported.append((datablock, datablock.name))
+                datablock.name = "__BAS12_imported_" + uuid.uuid4().hex
+            for container, datablock, name in names_to_restore:
+                previous = container.get(name)
+                if previous is not None and previous != datablock:
+                    renamed_previous.append((previous, previous.name))
+                    previous.name = "__BAS12_previous_" + uuid.uuid4().hex
+            for _, datablock, name in names_to_restore:
+                datablock.name = name
+                if datablock.name != name:
+                    raise ValueError("conflict: snapshot name could not be restored")
+            expected_fingerprint = manifest.get("scene_fingerprint")
+            if (expected_fingerprint is not None and
+                    self._bas07_scene_fingerprint(target) != expected_fingerprint):
+                raise ValueError("conflict: restored scene fingerprint differs from snapshot")
             target["_bas05_scene_revision"] = revision + 1
             target["_bas12_restore_source"] = snapshot_id
             bpy.context.window.scene = target
         except Exception:
             try:
                 bpy.context.window.scene = original
-                for obj, previous_name in renamed_previous:
-                    obj.name = previous_name
+                for datablock, _ in renamed_imported:
+                    datablock.name = "__BAS12_failed_" + uuid.uuid4().hex
+                for datablock, previous_name in renamed_previous:
+                    datablock.name = previous_name
+                for datablock, imported_name in renamed_imported:
+                    datablock.name = imported_name
             except Exception:
                 pass
             raise ValueError("conflict: restore failed, original retained where possible")
@@ -2771,6 +2840,9 @@ class BlenderMCPServer:
             curve = bpy.data.curves.new(name=name + "_Font", type="FONT")
             try:
                 curve.body = text
+                curve.extrude = 0.075
+                curve.bevel_depth = 0.008
+                curve.bevel_resolution = 3
                 obj = bpy.data.objects.new(name, curve)
                 scene.collection.objects.link(obj)
             except Exception:
@@ -2980,8 +3052,9 @@ class BlenderMCPServer:
                 raise ValueError("permission_denied: linked/empty object")
             if any(other != scene for other in getattr(obj, "users_scene", [])):
                 raise ValueError("permission_denied: object is shared by multiple scenes")
-            if obj.type != "MESH":
-                raise ValueError("invalid_input: geometry operation requires MESH")
+            allowed_types = ("MESH", "FONT") if kind == "pbr" else ("MESH",)
+            if obj.type not in allowed_types:
+                raise ValueError("invalid_input: unsupported object for material/geometry operation")
             if kind == "pbr":
                 # Never change other objects through a shared mesh datablock.
                 if obj.data.users > 1:

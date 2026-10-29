@@ -211,6 +211,10 @@ async def accept(port, record):
             initial_golden = await bas12_golden_gui("inspect")
             assert_golden(initial_golden)
             record["bas12_golden_expected"] = initial_golden
+            snapshot_baseline = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                            "effect_scope": "read", "limit": 200}}))
+            snapshot_facts = json.loads(snapshot_baseline["result"]["summary"])
             sandbox_request = {
                 "operation": "studio_scene_snapshot", "request_id": str(uuid4()),
                 "effect_scope": "file", "scene_id": sid,
@@ -262,6 +266,31 @@ async def accept(port, record):
             assert added["status"] == "succeeded", added
             from blender_mcp.security_policy import issue_confirmation
             secret = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            failed_before = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                            "effect_scope": "read", "limit": 200}}))
+            await bas12_golden_gui("arm_restore_failure")
+            injected_confirm = issue_confirmation(
+                secret, operation="studio_scene_restore", scene_id=sid,
+                scene_revision=rev + 53, snapshot_id=snapshot_id)
+            injected = unpack(await client.call_tool("studio_scene_restore", {"request": {
+                "operation": "studio_scene_restore", "request_id": str(uuid4()),
+                "effect_scope": "file", "scene_id": sid, "scene_revision": rev + 53,
+                "idempotency_key": "bas14-restore-injected-failure", "snapshot_id": snapshot_id,
+                "confirmation_token": injected_confirm}}))
+            assert injected["status"] == "failed", injected
+            failed_after = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                            "effect_scope": "read", "limit": 200}}))
+            assert failed_after["scene_id"] == failed_before["scene_id"]
+            assert failed_after["scene_revision"] == failed_before["scene_revision"]
+            assert failed_after["result"]["summary"] == failed_before["result"]["summary"], (
+                "Injected restore failure changed original names, materials or scene facts",
+                failed_before, failed_after)
+            record["bas14_restore_fault_rollback"] = {
+                "failed_as_requested": True, "scene_context_unchanged": True,
+                "full_scene_facts_unchanged": True}
+            print("BAS14_RESTORE_FAULT_ROLLBACK_OK", flush=True)
             confirm = issue_confirmation(
                 secret, operation="studio_scene_restore", scene_id=sid,
                 scene_revision=rev + 53, snapshot_id=snapshot_id)
@@ -276,7 +305,17 @@ async def accept(port, record):
                 "operation": "studio_scene_inspect", "request_id": str(uuid4()),
                 "effect_scope": "read", "limit": 100}}))
             assert restored_inspect["scene_revision"] == rev + 54
-            restored_objects = json.loads(restored_inspect["result"]["summary"])["objects"]
+            restored_facts = json.loads(restored_inspect["result"]["summary"])
+            restored_objects = restored_facts["objects"]
+            assert restored_facts["scene_fingerprint"] == snapshot_facts["scene_fingerprint"], (
+                "Restored names, geometry, collections/materials or camera differ from snapshot",
+                snapshot_facts, restored_facts)
+            assert restored_objects == snapshot_facts["objects"], (
+                "Restored full object facts must match, including unbound GUI objects",
+                snapshot_facts["objects"], restored_objects)
+            record["bas14_lossless_restore"] = {
+                "fingerprint_equal": True, "full_object_facts_equal": True,
+                "objects": len(restored_objects)}
             assert not any(item["name"] == "BAS12_Throwaway" for item in restored_objects)
             assert any(item["object_id"] == oid for item in restored_objects)
             assert restored["result"]["snapshot_id"] != snapshot_id  # pre-restore backup ID
