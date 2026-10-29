@@ -117,3 +117,25 @@ def test_cancel_real_process_and_stop_confirmation(runtime):
         assert result["stop_confirmed"] == 1
     with pytest.raises(KeyError):
         worker.get(row["job_id"], "other")
+
+
+def test_timeout_is_failed_and_never_published(runtime):
+    worker, snap = runtime
+    snap.write_bytes(b"BLENDER-SLOW")
+    row = submit(worker, snap, name="timeout-output", key="timeout", timeout_seconds=1)
+    result = wait_for(worker, row, timeout=5)
+    assert result["state"] == "failed"
+    assert "TimeoutError" in result["error"]
+    assert result["manifest"] is None
+    assert not (worker.root / "timeout-output").exists()
+
+
+def test_staging_uses_verified_blend_and_rejects_symlink(runtime):
+    worker, snap = runtime
+    outside = worker.root.parent / "outside.blend"
+    outside.write_bytes(b"BLENDER-TEST")
+    alias = worker.root / "alias.blend"
+    alias.symlink_to(outside)
+    # The service only accepts an already verified copy inside the sandbox.
+    with pytest.raises(ValueError):
+        submit(worker, worker.root / "missing.blend", name="missing", key="missing")
