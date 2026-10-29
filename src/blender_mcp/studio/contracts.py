@@ -235,21 +235,56 @@ class AssignMaterial(RequestBase):
 
 
 class SetCamera(RequestBase):
+    """Create/update a camera, optionally framing scene geometry by world bounds."""
     operation: Literal["studio_set_camera"]
     effect_scope: Literal[EffectScope.SCENE]
     camera_id: UUID | None = None
-    location: Vec3
-    rotation_euler: Vec3
-    lens_mm: float = Field(default=50, gt=0, le=1000)
+    name: NonEmpty | None = None
+    location: Vec3 | None = None
+    rotation_euler: Vec3 | None = None
+    lens_mm: float | None = Field(default=None, ge=1, le=300)
+    clip_start: float | None = Field(default=None, ge=0.001, le=100)
+    clip_end: float | None = Field(default=None, ge=0.1, le=100000)
+    target_id: UUID | None = None
+    frame_scene: bool = False
+    framing_margin: float = Field(default=1.15, ge=1, le=2)
+    active: bool = True
+    resolution_x: int | None = Field(default=None, ge=64, le=8192)
+    resolution_y: int | None = Field(default=None, ge=64, le=8192)
+
+    @model_validator(mode="after")
+    def validate_camera(self):
+        framing = self.target_id is not None or self.frame_scene
+        if self.target_id is not None and self.frame_scene:
+            raise ValueError("target_id and frame_scene are mutually exclusive")
+        if (self.resolution_x is None) != (self.resolution_y is None):
+            raise ValueError("resolution_x and resolution_y must be supplied together")
+        if framing and (self.location is not None or self.rotation_euler is not None):
+            raise ValueError("framing computes both camera location and rotation")
+        if not framing and self.camera_id is None and (
+                self.location is None or self.rotation_euler is None):
+            raise ValueError("camera creation requires a location and rotation, or framing")
+        if self.clip_start is not None and self.clip_end is not None and self.clip_start >= self.clip_end:
+            raise ValueError("clip_start must be below clip_end")
+        return self
 
 
 class LightSpec(StrictModel):
     kind: Literal["light"]
     light_id: UUID | None = None
+    name: NonEmpty | None = None
     light_type: Literal["POINT", "SUN", "SPOT", "AREA"]
-    energy: float = Field(ge=0)
+    energy: float = Field(ge=0, le=100000)
     color: Color3
     location: Vec3
+    rotation_euler: Vec3 | None = None
+    size: float | None = Field(default=None, ge=0.01, le=100)
+
+    @model_validator(mode="after")
+    def validate_light(self):
+        if self.size is not None and self.light_type != "AREA":
+            raise ValueError("light size applies only to AREA")
+        return self
 
 
 class WorldSpec(StrictModel):

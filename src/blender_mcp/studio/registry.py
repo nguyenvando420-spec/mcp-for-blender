@@ -34,6 +34,8 @@ HANDLERS = {
     "studio_set_transform": "studio_set_transform_v1",
     "studio_manage_collection": "studio_manage_collection_v1",
     "studio_assign_material": "studio_assign_material_v1",
+    "studio_set_camera": "studio_set_camera_v1",
+    "studio_set_light": "studio_set_light_v1",
     "studio_delete_object": "studio_delete_object_v1",
     "studio_scene_snapshot": "studio_scene_snapshot_v1",
     "studio_scene_save": "studio_scene_snapshot_v1",
@@ -41,7 +43,7 @@ HANDLERS = {
     "studio_scene_restore": "studio_scene_restore_v1",
 }
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect", "studio_capture_viewport"})
-MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection", "studio_assign_material"})
+MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection", "studio_assign_material", "studio_set_camera", "studio_set_light"})
 
 
 def visible_studio_tools(profile):
@@ -94,6 +96,16 @@ def _validate_numeric_bounds(req):
         offset = req.spec.offset
         if any(not math.isfinite(v) or abs(v) > 1000.0 for v in offset):
             raise ValueError("invalid_input: Geometry Nodes offset outside +/-1000")
+    if req.operation == "studio_set_camera":
+        for field in ("location", "rotation_euler"):
+            values = getattr(req, field)
+            if values is not None and any(not math.isfinite(v) or abs(v) > (100000 if field == "location" else 1000) for v in values):
+                raise ValueError("invalid_input: camera " + field)
+    if req.operation == "studio_set_light" and req.spec.kind == "light":
+        for field in ("location", "rotation_euler"):
+            values = getattr(req.spec, field)
+            if values is not None and any(not math.isfinite(v) or abs(v) > (100000 if field == "location" else 1000) for v in values):
+                raise ValueError("invalid_input: light " + field)
     if req.operation not in ("studio_create_object", "studio_set_transform"):
         return
     for field, limit in (("location", 100000.0), ("rotation_euler", 1000.0),
@@ -140,7 +152,9 @@ class StudioGateway:
                             | ({"collections-v1"} if "studio_manage_collection" in available else set())
                             | ({"confirmed-delete-v1"} if "studio_delete_object" in available else set())
                             | ({"offscreen-capture-v1"} if "studio_capture_viewport" in available else set())
-                            | ({"pbr-modifiers-geometry-preset-v1"} if "studio_assign_material" in available else set()))
+                            | ({"pbr-modifiers-geometry-preset-v1"} if "studio_assign_material" in available else set())
+                            | ({"camera-framing-bounds-v1"} if "studio_set_camera" in available else set())
+                            | ({"typed-light-world-v1"} if "studio_set_light" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -500,6 +514,43 @@ class StudioGateway:
                     summary=("Idempotent replay" if reply.get("replayed") else
                              req.spec.kind + (": " + material_id if material_id else "")),
                 )
+            elif req.operation == "studio_set_camera":
+                fields = req.model_dump(mode="json", exclude={"contract", "request_id", "operation", "effect_scope"})
+                reply = self.bridge(HANDLERS[req.operation], fields, False)
+                ident = UUID(reply["object_id"])
+                if req.camera_id is not None and ident != req.camera_id:
+                    raise ValueError("conflict: camera UUID mismatch")
+                obj = ObjectRef(id=ident, name=reply["name"], kind="camera")
+                result = ResultPayload(
+                    objects=[obj],
+                    scene_diff=SceneDiff(created=[] if req.camera_id else [ident],
+                                         updated=[ident] if req.camera_id else []),
+                    summary=("Idempotent replay" if reply.get("replayed") else "Camera configured"),
+                )
+            elif req.operation == "studio_set_light":
+                spec = req.spec.model_dump(mode="json")
+                reply = self.bridge(HANDLERS[req.operation], {
+                    "scene_id": str(req.scene_id),
+                    "scene_revision": req.scene_revision,
+                    "idempotency_key": req.idempotency_key,
+                    "spec": spec,
+                }, False)
+                if req.spec.kind == "light":
+                    ident = UUID(reply["object_id"])
+                    if req.spec.light_id is not None and ident != req.spec.light_id:
+                        raise ValueError("conflict: light UUID mismatch")
+                    obj = ObjectRef(id=ident, name=reply["name"], kind="light")
+                    result = ResultPayload(
+                        objects=[obj],
+                        scene_diff=SceneDiff(created=[] if req.spec.light_id else [ident],
+                                             updated=[ident] if req.spec.light_id else []),
+                        summary="Idempotent replay" if reply.get("replayed") else "Light configured",
+                    )
+                else:
+                    if reply.get("scene_id") != str(req.scene_id):
+                        raise ValueError("conflict: world reply mismatch")
+                    result = ResultPayload(summary=("Idempotent replay" if reply.get("replayed")
+                                                    else "Scene world configured"))
             elif req.operation == "studio_delete_object":
                 from .snapshot_store import SnapshotStore, SnapshotError
                 backup_id = None
