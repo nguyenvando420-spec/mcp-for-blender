@@ -277,3 +277,83 @@ def test_worker_restart_marks_uncertain_overwrite_without_auto_replay(runtime):
     assert record["state"] == "interrupted_unknown"
     assert resumed.cancel(record["job_id"],"owner")["state"] == "interrupted_unknown"
     assert verified_delivery(worker.root/"output") == before
+
+
+def test_atomic_exchange_exception_rolls_back_previous_delivery(runtime, monkeypatch):
+    import blender_mcp.studio.artifact_worker as worker_mod
+    from blender_mcp.studio.artifact_publish import verified_delivery, atomic_exchange
+
+    worker,snap = runtime
+    initial = submit(worker,snap)
+    assert wait_for(worker,initial)["state"] == "succeeded"
+    destination = worker.root / "output"
+    previous = verified_delivery(destination)
+    calls = []
+
+    def exchange_then_fail_once(left,right):
+        atomic_exchange(left,right)
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("injected error after atomic swap")
+
+    monkeypatch.setattr(worker_mod, "atomic_exchange", exchange_then_fail_once)
+    second = _overwrite(worker,snap,"rollback-error",previous,"trusted-test-token")
+    outcome = wait_for(worker,second)
+    assert outcome["state"] == "failed",outcome
+    assert len(calls) == 2, "Rollback must use another atomic exchange"
+    assert verified_delivery(destination) == previous
+    assert not outcome["manifest"]
+    assert Path(worker.work/"backups"/second["job_id"]).exists()
+
+
+def test_overwrite_destination_mutation_during_child_is_conflict(runtime):
+    from blender_mcp.studio.artifact_publish import verified_delivery
+    worker,snap = runtime
+    # Delay only this test's fake Blender worker to allow a destination edit.
+    program = worker.blender.read_text()
+    program = program.replace(
+        "if snapshot.read_bytes().endswith(b'SLOW'): time.sleep(20)",
+        "if snapshot.read_bytes().endswith(b'SLOW'): time.sleep(20)\\n"
+        "if snapshot.read_bytes().endswith(b'PAUSE'): time.sleep(0.8)")
+    worker.blender.write_text(program)
+    initial = submit(worker,snap)
+    assert wait_for(worker,initial)["state"] == "succeeded"
+    destination = worker.root/"output"
+    previous = verified_delivery(destination)
+    snap.write_bytes(b"BLENDER-PAUSE")
+    row = _overwrite(worker,snap,"destination-race",previous,"trusted-token")
+    (destination/"render-details.json").write_text('{"external":"modified"}')
+    result = wait_for(worker,row)
+    assert result["state"] == "failed",result
+    assert result["manifest"] is None
+    assert not (worker.work/"backups"/row["job_id"]).exists()
+    assert (destination/"render-details.json").read_text() == '{"external":"modified"}'
+
+
+def test_crash_journal_retained_for_manual_reconciliation(runtime):
+    from blender_mcp.studio.artifact_publish import verified_delivery
+    worker,snap = runtime
+    first = submit(worker,snap)
+    assert wait_for(worker,first)["state"] == "succeeded"
+    delivery = worker.root/"output"
+    before = verified_delivery(delivery)
+    interrupted_id = "22222222-2222-4222-8222-222222222222"
+    stage = worker.work/"stage"/interrupted_id
+    stage.mkdir()
+    (stage/"publish-journal.json").write_text(json.dumps({
+        "job_id":interrupted_id,"destination":str(delivery),
+        "expected_sha256":before,"state":"prepared"}))
+    with worker._connect() as db:
+        db.execute("""INSERT INTO jobs(job_id,owner_id,idempotency_key,payload_hash,
+            request_id,scene_id,scene_revision,spec,snapshot,snapshot_sha256,
+            output,timeout_seconds,state,created_at,updated_at,
+            overwrite,expected_sha256)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'running',?,?,1,?)""",
+            (interrupted_id,"owner","journal","hash","r",
+             "00000000-0000-4000-8000-000000000001",3,"{}",
+             str(snap),"a"*64,str(delivery),120,"now","now",before))
+    fresh = ArtifactWorker(worker.root,worker.blender,worker.script,"a"*40)
+    state = fresh.get(interrupted_id,"owner")
+    assert state["state"] == "interrupted_unknown"
+    assert (stage/"publish-journal.json").is_file()
+    assert verified_delivery(delivery) == before
