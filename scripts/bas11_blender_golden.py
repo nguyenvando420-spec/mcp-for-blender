@@ -50,6 +50,11 @@ if "--reopen" in args:
         obj = next(o for o in scene.objects if o.get("_bas05_object_id") == entry["id"])
         assert obj.name == entry["name"]
     assert report["active_camera"] == scene.camera.name
+    preview = out / "bas11-preview.png"
+    assert preview.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a"))
+    assert hashlib.sha256(preview.read_bytes()).hexdigest() == report["png_sha256"]
+    assert report["preview_camera"] == scene.camera.name
+    assert report["preview_world"] == scene.world.name
     report["reopen_ok"] = True
     (out / "bas11-reopen.json").write_text(json.dumps(report, indent=2))
     print("BAS11_REOPEN_PASS")
@@ -88,9 +93,28 @@ for options in ({"target_id":str(uuid4())},{"frame_scene":True,"clip_end":.1}):
         raise AssertionError("Expected fail-closed framing")
 assert (cube.location.copy(),cube.rotation_euler.copy(),cube.scale.copy(),scene.frame_current)==before
 objects=[{"id":o["_bas05_object_id"],"name":o.name} for o in scene.objects if o.type in ("CAMERA","LIGHT")]
+# Render the actual active-camera/world composition with CPU Cycles.
+scene.render.engine = "CYCLES"
+scene.cycles.device = "CPU"
+scene.cycles.samples = 8
+scene.render.resolution_x = 320
+scene.render.resolution_y = 180
+scene.render.resolution_percentage = 100
+scene.render.image_settings.file_format = "PNG"
+scene.render.filepath = str(out / "bas11-preview.png")
+preview_camera, preview_world = scene.camera.name, scene.world.name
+bpy.ops.render.render(write_still=True)
+preview = out / "bas11-preview.png"
+assert preview.read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a"))
+assert preview.stat().st_size > 3000
+png_sha = hashlib.sha256(preview.read_bytes()).hexdigest()
+scene.render.resolution_x, scene.render.resolution_y = 960, 540
+assert scene.camera.name == preview_camera and scene.world.name == preview_world
 bpy.ops.wm.save_as_mainfile(filepath=str(out / "bas11.blend"))
 sha=hashlib.sha256((out / "bas11.blend").read_bytes()).hexdigest()
 (out / "bas11.json").write_text(json.dumps({"blender":bpy.app.version_string,
     "active_camera":scene.camera.name,"objects":objects,"world":scene.world.name,
-    "blend_sha256":sha,"reopen_ok":False},indent=2))
+    "blend_sha256":sha,"png_sha256":png_sha,
+    "preview_camera":preview_camera,"preview_world":preview_world,
+    "reopen_ok":False},indent=2))
 print("BAS11_GOLDEN_PASS",sha)
