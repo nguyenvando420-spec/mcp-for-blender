@@ -859,14 +859,25 @@ async def accept(port, record):
                     ("studio_export_artifacts", "bas13-gui-export",
                      {"object_ids": [cube_id], "formats": ["glb", "blend"],
                       "output_uri": (delivery / "bas13-gui-export").as_uri()})):
-                submitted13 = unpack(await client.call_tool(operation, {"request": {
+                request13 = {
                     "operation": operation, "effect_scope": "file",
                     "request_id": str(uuid4()), "scene_id": newid,
                     "scene_revision": basrev,
-                    "idempotency_key": key, **data}}))
+                    "idempotency_key": key, **data}
+                submitted13 = unpack(await client.call_tool(
+                    operation, {"request": request13}))
                 assert submitted13["status"] == "accepted", submitted13
                 job13 = await bas13_wait(submitted13["job_id"])
                 assert job13["state"] == "succeeded", job13
+                replay13 = unpack(await client.call_tool(operation, {"request": {
+                    **request13, "request_id": str(uuid4())}}))
+                assert replay13["status"] == "accepted"
+                assert replay13["job_id"] == submitted13["job_id"], replay13
+                denied13 = unpack(await client.call_tool(operation, {"request": {
+                    **request13, "request_id": str(uuid4()),
+                    "idempotency_key": key + ":other"}}))
+                assert denied13["status"] == "failed", denied13
+                assert denied13["error"]["code"] == "conflict", denied13
                 manifest13 = Path(job13["manifest"])
                 assert manifest13.is_file()
                 evidence13 = json.loads(manifest13.read_text())
@@ -878,7 +889,8 @@ async def accept(port, record):
                     assert artifact13["provenance"]["scene_revision"] == basrev
                 bas13_proofs.append({"operation":operation, "job_id":job13["job_id"],
                                      "artifact_count":len(evidence13["artifacts"]),
-                                     "manifest_sha256":hashlib.sha256(manifest13.read_bytes()).hexdigest()})
+                                     "manifest_sha256":hashlib.sha256(manifest13.read_bytes()).hexdigest(),
+                                     "idempotent_replay": True, "overwrite_denied": True})
             after_artifacts13 = unpack(await client.call_tool(
                 "studio_scene_inspect", {"request": {
                     "operation": "studio_scene_inspect", "request_id": str(uuid4()),
