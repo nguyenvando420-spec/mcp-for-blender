@@ -194,6 +194,8 @@ _CONFIRM_CODES = {
     "studio_scene_restore": 2,
     "studio_delete_object": 3,
     "studio_scene_save": 4,
+    "studio_render_still": 5,
+    "studio_export_artifacts": 6,
 }
 
 
@@ -203,9 +205,11 @@ def _confirmation_fields(operation: str, scene_id: str, scene_revision: int,
         code = _CONFIRM_CODES[operation]
         if not (0 <= scene_revision < 2**64):
             raise ValueError("Invalid scene revision")
-        if operation != "studio_scene_save" and snapshot_id is None:
+        no_snapshot = operation in ("studio_scene_save", "studio_render_still",
+                                    "studio_export_artifacts")
+        if not no_snapshot and snapshot_id is None:
             raise ValueError("Snapshot required")
-        if operation == "studio_scene_save" and snapshot_id is not None:
+        if no_snapshot and snapshot_id is not None:
             raise ValueError("Unexpected snapshot")
         return (code, UUID(scene_id).bytes, scene_revision,
                 UUID(snapshot_id).bytes if snapshot_id else bytes(16))
@@ -274,7 +278,8 @@ def issue_resource_confirmation(secret: bytes, *, operation: str, scene_id: str,
     if len(secret) < 32 or not isinstance(resource, str) or not resource:
         raise PolicyDenied("Invalid resource confirmation")
     fields = _confirmation_fields(operation, scene_id, scene_revision,
-                                  snapshot_id if operation != "studio_scene_save" else None)
+                                  snapshot_id if operation not in ("studio_scene_save",
+                                      "studio_render_still", "studio_export_artifacts") else None)
     exp = int(time.time()) if now is None else now
     try:
         data = _RESOURCE_TOKEN_STRUCT.pack(
@@ -369,13 +374,15 @@ def authorize_studio_request(data: dict, policy: Policy, *,
         else:
             check_egress_url(texture_uri, policy.egress_hosts)
     needs_confirmation = (request.operation in CONFIRM_OPERATIONS or
-                          (request.operation == "studio_scene_save" and request.overwrite))
+                          (request.operation in ("studio_scene_save",
+                            "studio_render_still", "studio_export_artifacts") and request.overwrite))
     if needs_confirmation:
         if not confirmation_secret:
             raise PolicyDenied("Trusted confirmation verifier is unavailable")
         if request.operation == "studio_scene_open":
             resource = str(request.input_uri) + "|" + str(request.expected_sha256)
-        elif request.operation == "studio_scene_save":
+        elif request.operation in ("studio_scene_save", "studio_render_still",
+                                  "studio_export_artifacts"):
             resource = str(request.output_uri) + "|" + str(request.expected_sha256)
         elif request.operation == "studio_delete_object":
             resource = str(request.object_id)
