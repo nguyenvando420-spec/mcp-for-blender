@@ -610,6 +610,14 @@ async def accept(port, record):
             assert empty["status"] == "succeeded", empty
             blank = json.loads(empty["result"]["summary"])
             assert blank["object_count"] == 0 and blank["camera"] is None
+            empty_framing = unpack(await client.call_tool("studio_set_camera", {
+                "request": {"operation": "studio_set_camera",
+                            "request_id": str(uuid4()), "effect_scope": "scene",
+                            "scene_id": empty["scene_id"],
+                            "scene_revision": empty["scene_revision"],
+                            "idempotency_key": "bas11-empty-scene",
+                            "frame_scene": True}}))
+            assert empty_framing["error"]["code"] == "invalid_input", empty_framing
             no_camera = unpack(await client.call_tool("studio_capture_viewport", {"request": {
                 "operation": "studio_capture_viewport", "request_id": str(uuid4()),
                 "effect_scope": "read", "scene_id": empty["scene_id"],
