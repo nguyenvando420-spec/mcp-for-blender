@@ -299,7 +299,10 @@ def grade(suite: dict, suite_sha: str, report: dict, root: Path) -> dict:
             errors = grade_attempt(root, spec, primary)
         except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
             errors = [str(exc)]
-        if primary.get("attempt") != 1 or any(a.get("attempt") != i + 1 for i, a in enumerate(attempts)):
+        if not isinstance(primary, dict) or primary.get("attempt") != 1 or any(
+                not isinstance(a, dict) or a.get("attempt") != i + 1
+                for i, a in enumerate(attempts)
+        ):
             errors.append("attempt ordering/numbering invalid")
         results.append({"id": spec["id"], "kind": spec["kind"], "first_pass": not errors,
                         "attempt_count": len(attempts), "errors": errors,
