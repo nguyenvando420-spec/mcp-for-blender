@@ -151,7 +151,12 @@ class ArtifactWorker:
                 or self.root not in output.resolve(strict=False).parents
                 or output.is_symlink() or not output.parent.is_dir()):
             raise ValueError("destination_must_be_new_sandbox_directory")
-        snapshot = Path(snapshot).resolve(strict=True)
+        snapshot_path = Path(snapshot)
+        if snapshot_path.is_symlink():
+            raise ValueError("snapshot_symlink_denied")
+        snapshot = snapshot_path.resolve(strict=True)
+        if self.root not in snapshot.parents:
+            raise ValueError("snapshot_outside_sandbox")
         if not snapshot.is_file() or not 8 <= snapshot.stat().st_size <= MAX_BLEND:
             raise ValueError("invalid_verified_snapshot")
         with snapshot.open("rb") as fp:
