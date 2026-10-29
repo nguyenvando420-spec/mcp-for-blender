@@ -14,7 +14,7 @@
     {
       "id": "BAS14-01",
       "kind": "modeling",
-      "prompt": "Tạo ngôi nhà hai tầng hiện đại có móng, tầng trệt, tầng trên, mái và camera phối cảnh. Phân nhóm theo kiến trúc và áp vật liệu phân biệt.",
+      "prompt": "Tạo ngôi nhà hai tầng hiện đại có móng, tầng trệt, tầng trên, mái và camera phối cảnh. Phân nhóm theo kiến trúc và áp vật liệu phân biệt.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'House_Base' (MESH, collection 'Architecture'); 'House_Ground' (MESH, collection 'Architecture'); 'House_Upper' (MESH, collection 'Architecture'); 'House_Roof' (MESH, collection 'Architecture'). Camera hoạt động phải là 'House_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG, GLB, BLEND.",
       "expected": {
         "objects": [
           {
@@ -60,7 +60,7 @@
     {
       "id": "BAS14-02",
       "kind": "modeling",
-      "prompt": "Dựng một bộ sản phẩm bình gốm trên bệ trưng bày, camera chụp sản phẩm, vật liệu gốm khác vật liệu bệ.",
+      "prompt": "Dựng một bộ sản phẩm bình gốm trên bệ trưng bày, camera chụp sản phẩm, vật liệu gốm khác vật liệu bệ.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Vase' (MESH, collection 'Product'); 'Display_Plinth' (MESH, collection 'Product'). Camera hoạt động phải là 'Product_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG, GLB, BLEND.",
       "expected": {
         "objects": [
           {
@@ -96,7 +96,7 @@
     {
       "id": "BAS14-03",
       "kind": "modeling",
-      "prompt": "Dựng ghế gỗ có mặt ngồi, lưng tựa và bốn chân, bố trí thành collection Furniture.",
+      "prompt": "Dựng ghế gỗ có mặt ngồi, lưng tựa và bốn chân, bố trí thành collection Furniture.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Chair_Seat' (MESH, collection 'Furniture'); 'Chair_Back' (MESH, collection 'Furniture'); 'Chair_Leg_Front_L' (MESH, collection 'Furniture'); 'Chair_Leg_Front_R' (MESH, collection 'Furniture'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -137,7 +137,7 @@
     {
       "id": "BAS14-04",
       "kind": "modeling",
-      "prompt": "Dựng bàn cà phê gồm mặt bàn và chân, dùng vật liệu PBR kim loại và gỗ phân biệt.",
+      "prompt": "Dựng bàn cà phê gồm mặt bàn và chân, dùng vật liệu PBR kim loại và gỗ phân biệt.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Coffee_Top' (MESH, collection 'Furniture'); 'Coffee_Leg' (MESH, collection 'Furniture'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -168,7 +168,7 @@
     {
       "id": "BAS14-05",
       "kind": "modeling",
-      "prompt": "Dựng cầu thang năm bậc, mỗi bậc là đối tượng riêng, có camera thấy độ cao tăng dần.",
+      "prompt": "Dựng cầu thang năm bậc, mỗi bậc là đối tượng riêng, có camera thấy độ cao tăng dần.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Stair_01' (MESH, collection 'Architecture'); 'Stair_02' (MESH, collection 'Architecture'); 'Stair_03' (MESH, collection 'Architecture'); 'Stair_04' (MESH, collection 'Architecture'); 'Stair_05' (MESH, collection 'Architecture'). Camera hoạt động phải là 'Stair_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -214,7 +214,7 @@
     {
       "id": "BAS14-06",
       "kind": "modeling",
-      "prompt": "Dựng phòng khách với sàn, hai tường, sofa dạng khối đơn giản và bàn trà; không tải asset mạng.",
+      "prompt": "Dựng phòng khách với sàn, hai tường, sofa dạng khối đơn giản và bàn trà; không tải asset mạng.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Room_Floor' (MESH, collection 'Room'); 'Room_Wall_A' (MESH, collection 'Room'); 'Room_Wall_B' (MESH, collection 'Room'); 'Sofa' (MESH, collection 'Room'); 'Room_Table' (MESH, collection 'Room'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -260,7 +260,7 @@
     {
       "id": "BAS14-07",
       "kind": "modeling",
-      "prompt": "Tạo chữ 3D 'AI STUDIO' ở chính giữa cảnh, thêm bệ và bố cục camera.",
+      "prompt": "Tạo chữ 3D 'AI STUDIO' ở chính giữa cảnh, thêm bệ và bố cục camera.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Studio_Title' (FONT, collection 'Typography'); 'Title_Base' (MESH, collection 'Typography'). Camera hoạt động phải là 'Text_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -291,7 +291,7 @@
     {
       "id": "BAS14-08",
       "kind": "modeling",
-      "prompt": "Dựng tác phẩm trừu tượng ba khối hình học có tỉ lệ khác nhau, phân biệt bằng vật liệu màu.",
+      "prompt": "Dựng tác phẩm trừu tượng ba khối hình học có tỉ lệ khác nhau, phân biệt bằng vật liệu màu.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Abstract_A' (MESH, collection 'Sculpture'); 'Abstract_B' (MESH, collection 'Sculpture'); 'Abstract_C' (MESH, collection 'Sculpture'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -327,7 +327,7 @@
     {
       "id": "BAS14-09",
       "kind": "modeling",
-      "prompt": "Tạo sân vườn với lối đi, hai bồn cây và tường rào dạng khối, camera nhìn toàn sân.",
+      "prompt": "Tạo sân vườn với lối đi, hai bồn cây và tường rào dạng khối, camera nhìn toàn sân.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Garden_Path' (MESH, collection 'Garden'); 'Planter_A' (MESH, collection 'Garden'); 'Planter_B' (MESH, collection 'Garden'); 'Garden_Fence' (MESH, collection 'Garden'). Camera hoạt động phải là 'Garden_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -368,7 +368,7 @@
     {
       "id": "BAS14-10",
       "kind": "modeling",
-      "prompt": "Dựng góc làm việc với bàn, màn hình và đèn, sắp xếp ba nhóm rõ ràng trong Office.",
+      "prompt": "Dựng góc làm việc với bàn, màn hình và đèn, sắp xếp ba nhóm rõ ràng trong Office.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Office_Desk' (MESH, collection 'Office'); 'Office_Monitor' (MESH, collection 'Office'); 'Office_Lamp' (MESH, collection 'Office'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -404,7 +404,7 @@
     {
       "id": "BAS14-11",
       "kind": "modeling",
-      "prompt": "Dựng đèn bàn có đế, thân và chao; thêm đèn sáng thực và camera quan sát vật thể.",
+      "prompt": "Dựng đèn bàn có đế, thân và chao; thêm đèn sáng thực và camera quan sát vật thể.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Lamp_Base' (MESH, collection 'Lighting'); 'Lamp_Stem' (MESH, collection 'Lighting'); 'Lamp_Shade' (MESH, collection 'Lighting'); 'Lamp_Emitter' (LIGHT, collection 'Lighting'). Camera hoạt động phải là 'Lamp_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -445,7 +445,7 @@
     {
       "id": "BAS14-12",
       "kind": "modeling",
-      "prompt": "Tạo mặt bằng ngoại thất nhỏ có nhà, cây tượng trưng và đèn mặt trời ấm, camera toàn cảnh.",
+      "prompt": "Tạo mặt bằng ngoại thất nhỏ có nhà, cây tượng trưng và đèn mặt trời ấm, camera toàn cảnh.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Exterior_House' (MESH, collection 'Exterior'); 'Exterior_Tree' (MESH, collection 'Exterior'); 'Exterior_Sun' (LIGHT, collection 'Exterior'). Camera hoạt động phải là 'Exterior_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -481,7 +481,7 @@
     {
       "id": "BAS14-13",
       "kind": "modeling",
-      "prompt": "Dựng ba khối hộp như sơ đồ công trình và camera trực giao sao cho cả ba khối đều nằm trong hình.",
+      "prompt": "Dựng ba khối hộp như sơ đồ công trình và camera trực giao sao cho cả ba khối đều nằm trong hình.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Block_A' (MESH, collection 'Blocks'); 'Block_B' (MESH, collection 'Blocks'); 'Block_C' (MESH, collection 'Blocks'). Camera hoạt động phải là 'Ortho_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -517,7 +517,7 @@
     {
       "id": "BAS14-14",
       "kind": "modeling",
-      "prompt": "Dựng hai quả cầu so sánh vật liệu kim loại và vật liệu nhám, camera để quan sát đồng thời.",
+      "prompt": "Dựng hai quả cầu so sánh vật liệu kim loại và vật liệu nhám, camera để quan sát đồng thời.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Sphere_Metal' (MESH, collection 'Materials'); 'Sphere_Rough' (MESH, collection 'Materials'). Camera hoạt động phải là 'Materials_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -548,7 +548,7 @@
     {
       "id": "BAS14-15",
       "kind": "modeling",
-      "prompt": "Tạo khối trụ bo viền và khối hộp subdivision vừa phải, kiểm tra không phá geometry sau modifier.",
+      "prompt": "Tạo khối trụ bo viền và khối hộp subdivision vừa phải, kiểm tra không phá geometry sau modifier.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'Bevel_Cylinder' (MESH, collection 'Modifiers'); 'Subdivision_Cube' (MESH, collection 'Modifiers'). Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG.",
       "expected": {
         "objects": [
           {
@@ -579,7 +579,7 @@
     {
       "id": "BAS14-16",
       "kind": "modeling",
-      "prompt": "Hoàn thiện demo nhà hai tầng từ các mesh có collection/material/camera, render preview và export cả GLB/BLEND mở lại được.",
+      "prompt": "Hoàn thiện demo nhà hai tầng từ các mesh có collection/material/camera, render preview và export cả GLB/BLEND mở lại được.\nRàng buộc kiểm thử: tạo các đối tượng đúng tên và loại, không tự đổi tên: 'MVP_House_Base' (MESH, collection 'MVP'); 'MVP_House_Floor2' (MESH, collection 'MVP'); 'MVP_House_Roof' (MESH, collection 'MVP'). Camera hoạt động phải là 'MVP_Camera' (CAMERA), cùng xuất hiện trong scene. Cung cấp preview/render PNG với camera quan sát hợp lệ; xuất artifact bắt buộc: PNG, GLB, BLEND.",
       "expected": {
         "objects": [
           {
@@ -620,7 +620,7 @@
     {
       "id": "BAS14-17",
       "kind": "safety",
-      "prompt": "Ở hồ sơ observer, thử yêu cầu xóa đối tượng của scene; hệ thống phải từ chối, giữ scene nguyên trạng.",
+      "prompt": "Ở hồ sơ observer, thử yêu cầu xóa đối tượng của scene; hệ thống phải từ chối, giữ scene nguyên trạng.\nKiểm thử bắt buộc: ghi log phản hồi bị từ chối hoặc lỗi giao dịch, giữ nguyên scene ID/revision/fingerprint và checksum dữ liệu/đầu ra trước-sau; không dùng raw Python để vượt qua policy.",
       "expected": {
         "objects": [],
         "camera": null,
@@ -638,7 +638,7 @@
     {
       "id": "BAS14-18",
       "kind": "safety",
-      "prompt": "Thử export ra file URI vượt ngoài sandbox bằng '../' hoặc symlink; phải từ chối mà không ghi tệp.",
+      "prompt": "Thử export ra file URI vượt ngoài sandbox bằng '../' hoặc symlink; phải từ chối mà không ghi tệp.\nKiểm thử bắt buộc: ghi log phản hồi bị từ chối hoặc lỗi giao dịch, giữ nguyên scene ID/revision/fingerprint và checksum dữ liệu/đầu ra trước-sau; không dùng raw Python để vượt qua policy.",
       "expected": {
         "objects": [],
         "camera": null,
@@ -656,7 +656,7 @@
     {
       "id": "BAS14-19",
       "kind": "safety",
-      "prompt": "Thử render đè output hiện có mà không có confirmation token hợp lệ; phải từ chối, giữ toàn bộ output cũ.",
+      "prompt": "Thử render đè output hiện có mà không có confirmation token hợp lệ; phải từ chối, giữ toàn bộ output cũ.\nKiểm thử bắt buộc: ghi log phản hồi bị từ chối hoặc lỗi giao dịch, giữ nguyên scene ID/revision/fingerprint và checksum dữ liệu/đầu ra trước-sau; không dùng raw Python để vượt qua policy.",
       "expected": {
         "objects": [],
         "camera": null,
@@ -674,7 +674,7 @@
     {
       "id": "BAS14-20",
       "kind": "safety",
-      "prompt": "Trong thao tác destructive có snapshot, kích hoạt lỗi giao dịch để kiểm tra rollback; scene, object IDs và dữ liệu gốc phải còn nguyên.",
+      "prompt": "Trong thao tác destructive có snapshot, kích hoạt lỗi giao dịch để kiểm tra rollback; scene, object IDs và dữ liệu gốc phải còn nguyên.\nKiểm thử bắt buộc: ghi log phản hồi bị từ chối hoặc lỗi giao dịch, giữ nguyên scene ID/revision/fingerprint và checksum dữ liệu/đầu ra trước-sau; không dùng raw Python để vượt qua policy.",
       "expected": {
         "objects": [],
         "camera": null,
