@@ -36,8 +36,8 @@ if "--reopen" in args:
     file = out / "bas11.blend"
     bpy.ops.wm.open_mainfile(filepath=str(file))
     scene = bpy.context.scene
-    cams = sorted(o for o in scene.objects if o.type == "CAMERA")
-    lights = sorted(o for o in scene.objects if o.type == "LIGHT")
+    cams = sorted((o for o in scene.objects if o.type == "CAMERA"), key=lambda o: o.name)
+    lights = sorted((o for o in scene.objects if o.type == "LIGHT"), key=lambda o: o.name)
     assert len(cams) == 2 and len(lights) == 3, (cams,lights)
     assert scene.camera is not None and scene.camera.get("_bas05_object_id")
     assert all(o.get("_bas05_object_id") for o in cams + lights)
