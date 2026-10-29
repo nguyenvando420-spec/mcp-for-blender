@@ -447,6 +447,20 @@
     "ExportArtifacts": {
       "additionalProperties": false,
       "properties": {
+        "confirmation_token": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Token"
+        },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
@@ -454,6 +468,19 @@
           "const": "file",
           "title": "Effect Scope",
           "type": "string"
+        },
+        "expected_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Sha256"
         },
         "formats": {
           "items": {
@@ -502,6 +529,11 @@
           "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Output Uri",
           "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
         },
         "request_id": {
           "format": "uuid",
@@ -969,6 +1001,20 @@
     "RenderStill": {
       "additionalProperties": false,
       "properties": {
+        "confirmation_token": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmation Token"
+        },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
@@ -976,6 +1022,19 @@
           "const": "file",
           "title": "Effect Scope",
           "type": "string"
+        },
+        "expected_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Sha256"
         },
         "height": {
           "maximum": 16384,
@@ -1008,6 +1067,11 @@
           "pattern": "^[a-z][a-z0-9+.-]*://\\S+$",
           "title": "Output Uri",
           "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "title": "Overwrite",
+          "type": "boolean"
         },
         "request_id": {
           "format": "uuid",

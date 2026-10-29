@@ -346,6 +346,18 @@ class RenderStill(RequestBase):
     samples: int = Field(ge=1, le=65536)
     output_uri: Uri
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
+    overwrite: bool = False
+    expected_sha256: Sha256 | None = None
+    confirmation_token: NonEmpty | None = None
+
+    @model_validator(mode="after")
+    def confirm_overwrite(self):
+        if self.overwrite:
+            if self.expected_sha256 is None or self.confirmation_token is None:
+                raise ValueError("confirmed overwrite requires target checksum and token")
+        elif self.expected_sha256 is not None or self.confirmation_token is not None:
+            raise ValueError("new artifact must not contain overwrite confirmation")
+        return self
 
 
 class ExportArtifacts(RequestBase):
@@ -354,6 +366,18 @@ class ExportArtifacts(RequestBase):
     output_uri: Uri
     formats: set[Literal["glb", "blend"]] = Field(min_length=1)
     object_ids: list[UUID] = Field(min_length=1)
+    overwrite: bool = False
+    expected_sha256: Sha256 | None = None
+    confirmation_token: NonEmpty | None = None
+
+    @model_validator(mode="after")
+    def confirm_overwrite(self):
+        if self.overwrite:
+            if self.expected_sha256 is None or self.confirmation_token is None:
+                raise ValueError("confirmed overwrite requires target checksum and token")
+        elif self.expected_sha256 is not None or self.confirmation_token is not None:
+            raise ValueError("new artifact must not contain overwrite confirmation")
+        return self
 
 
 StudioRequest = Annotated[

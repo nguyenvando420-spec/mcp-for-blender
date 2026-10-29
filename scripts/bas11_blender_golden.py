@@ -64,6 +64,14 @@ bpy.ops.mesh.primitive_cube_add(size=2, location=(0,0,0))
 cube = bpy.context.object
 cube.name = "BAS11_Target"
 cube["_bas05_object_id"] = str(uuid4())
+material = bpy.data.materials.new("BAS13_Golden_PBR")
+material.use_nodes = True
+material.diffuse_color = (0.8, 0.3, 0.15, 1.0)
+pbr = material.node_tree.nodes.get("Principled BSDF")
+pbr.inputs["Base Color"].default_value = (0.8, 0.3, 0.15, 1.0)
+pbr.inputs["Metallic"].default_value = 0.15
+pbr.inputs["Roughness"].default_value = 0.45
+cube.data.materials.append(material)
 first = invoke("studio_set_camera_v1", name="BAS11_Camera_A",
                target_id=cube["_bas05_object_id"], lens_mm=50,
                resolution_x=960,resolution_y=540)
@@ -114,6 +122,7 @@ bpy.ops.wm.save_as_mainfile(filepath=str(out / "bas11.blend"))
 sha=hashlib.sha256((out / "bas11.blend").read_bytes()).hexdigest()
 (out / "bas11.json").write_text(json.dumps({"blender":bpy.app.version_string,
     "active_camera":scene.camera.name,"objects":objects,"world":scene.world.name,
+    "target_id":cube["_bas05_object_id"],"target_material":material.name,
     "blend_sha256":sha,"png_sha256":png_sha,
     "preview_camera":preview_camera,"preview_world":preview_world,
     "reopen_ok":False},indent=2))

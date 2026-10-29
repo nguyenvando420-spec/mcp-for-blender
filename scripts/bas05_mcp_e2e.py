@@ -830,6 +830,136 @@ async def accept(port, record):
                 "selection_frame_preserved": True, "offscreen_capture_scene_stable": True,
                 "interactive_gui": "Xvfb real Blender UI (automated, not human mouse)"}
 
+            # BAS-13 typed requests through real MCP/stdIO -> authenticated
+            # Blender GUI snapshot -> isolated CPU Blender child -> manifest.
+            assert {"studio_render_still", "studio_export_artifacts",
+                    "studio_artifact_job_status", "studio_artifact_job_cancel"} <= toolset
+            assert {"studio_render_still", "studio_export_artifacts"} <= set(
+                handshake["operations"])
+            delivery = Path(os.environ["BLENDER_MCP_STUDIO_ROOT"])
+            bas13_proofs = []
+
+            async def bas13_wait(job_id):
+                started = time.monotonic()
+                while time.monotonic() - started < 80:
+                    answer = unpack(await client.call_tool(
+                        "studio_artifact_job_status", {"job_id": job_id}))
+                    assert answer["status"] == "succeeded", answer
+                    item = answer["job"]
+                    if item["state"] in ("succeeded", "failed", "cancelled", "interrupted_unknown"):
+                        return item
+                    await asyncio.sleep(.2)
+                raise AssertionError("BAS13 GUI subprocess job timeout")
+
+            for operation, key, data in (
+                    ("studio_render_still", "bas13-gui-render",
+                     {"width": 128, "height": 128, "samples": 2,
+                      "timeout_seconds": 120,
+                      "output_uri": (delivery / "bas13-gui-render").as_uri()}),
+                    ("studio_export_artifacts", "bas13-gui-export",
+                     {"object_ids": [cube_id], "formats": ["glb", "blend"],
+                      "output_uri": (delivery / "bas13-gui-export").as_uri()})):
+                request13 = {
+                    "operation": operation, "effect_scope": "file",
+                    "request_id": str(uuid4()), "scene_id": newid,
+                    "scene_revision": basrev,
+                    "idempotency_key": key, **data}
+                submitted13 = unpack(await client.call_tool(
+                    operation, {"request": request13}))
+                assert submitted13["status"] == "accepted", submitted13
+                job13 = await bas13_wait(submitted13["job_id"])
+                assert job13["state"] == "succeeded", job13
+                replay13 = unpack(await client.call_tool(operation, {"request": {
+                    **request13, "request_id": str(uuid4())}}))
+                assert replay13["status"] == "accepted"
+                assert replay13["job_id"] == submitted13["job_id"], replay13
+                denied13 = unpack(await client.call_tool(operation, {"request": {
+                    **request13, "request_id": str(uuid4()),
+                    "idempotency_key": key + ":other"}}))
+                assert denied13["status"] == "failed", denied13
+                assert denied13["error"]["code"] == "conflict", denied13
+                manifest13 = Path(job13["manifest"])
+                assert manifest13.is_file()
+                evidence13 = json.loads(manifest13.read_text())
+                assert evidence13["job_id"] == submitted13["job_id"]
+                assert len(evidence13["artifacts"]) >= 2
+                for artifact13 in evidence13["artifacts"]:
+                    actual13 = manifest13.parent / Path(artifact13["uri"]).name
+                    assert artifact13["sha256"] == hashlib.sha256(actual13.read_bytes()).hexdigest()
+                    assert artifact13["provenance"]["scene_revision"] == basrev
+                bas13_proofs.append({"operation":operation, "job_id":job13["job_id"],
+                                     "artifact_count":len(evidence13["artifacts"]),
+                                     "manifest_sha256":hashlib.sha256(manifest13.read_bytes()).hexdigest(),
+                                     "idempotent_replay": True, "overwrite_denied": True})
+            # Trusted test harness acts as the reviewing UI. The MCP model
+            # never gets a token-issuance API. Bind consent to destination,
+            # complete pre-write manifest, scene ID and revision.
+            from blender_mcp.security_policy import issue_resource_confirmation
+            replacement_dest = delivery / "bas13-gui-render"
+            original_manifest = replacement_dest / "manifest.json"
+            old_manifest_digest = hashlib.sha256(original_manifest.read_bytes()).hexdigest()
+            secret13 = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            confirm13 = issue_resource_confirmation(
+                secret13, operation="studio_render_still", scene_id=newid,
+                scene_revision=basrev,
+                resource=replacement_dest.as_uri() + "|" + old_manifest_digest)
+            confirmed13 = {
+                "operation": "studio_render_still", "effect_scope": "file",
+                "request_id": str(uuid4()), "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas13-gui-confirmed",
+                "output_uri": replacement_dest.as_uri(), "width": 128,
+                "height": 128, "samples": 4, "timeout_seconds": 120,
+                "overwrite": True, "expected_sha256": old_manifest_digest,
+                "confirmation_token": confirm13}
+            # The signed proof may NOT be redirected to a different output.
+            tampered13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4()),
+                            "expected_sha256": "0"*64}}))
+            assert tampered13["status"] == "failed", tampered13
+            assert tampered13["error"]["code"] == "permission_denied", tampered13
+            issued13 = unpack(await client.call_tool("studio_render_still", {
+                "request": confirmed13}))
+            assert issued13["status"] == "accepted", issued13
+            result13 = await bas13_wait(issued13["job_id"])
+            assert result13["state"] == "succeeded", result13
+            assert Path(result13["backup"]).is_dir(), result13
+            assert hashlib.sha256((Path(result13["backup"]) / "manifest.json").read_bytes()).hexdigest() == old_manifest_digest
+            assert hashlib.sha256(original_manifest.read_bytes()).hexdigest() != old_manifest_digest
+            # Keep the prior delivery in the uploaded CI evidence, not only
+            # the hidden private worker backup directory.
+            import shutil
+            backup_evidence13 = delivery.parent / "bas13-confirmed-backup"
+            shutil.copytree(Path(result13["backup"]), backup_evidence13)
+            assert hashlib.sha256((backup_evidence13 / "manifest.json").read_bytes()).hexdigest() == old_manifest_digest
+            replay13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4())}}))
+            assert replay13["status"] == "accepted"
+            assert replay13["job_id"] == issued13["job_id"]
+            # A consumed consent token must fail on a different job key.
+            consumed13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4()),
+                            "idempotency_key": "bas13-gui-consumed",
+                            "expected_sha256": hashlib.sha256(original_manifest.read_bytes()).hexdigest()}}))
+            assert consumed13["status"] == "failed", consumed13
+            record["bas13_confirmed_overwrite"] = {
+                "job_id": issued13["job_id"],
+                "old_manifest_sha256": old_manifest_digest,
+                "new_manifest_sha256": hashlib.sha256(original_manifest.read_bytes()).hexdigest(),
+                "backup": result13["backup"], "confirmed": True,
+                "tamper_denied": True, "replay_safe": True,
+                "used_token_denied": True}
+            after_artifacts13 = unpack(await client.call_tool(
+                "studio_scene_inspect", {"request": {
+                    "operation": "studio_scene_inspect", "request_id": str(uuid4()),
+                    "effect_scope": "read", "scene_id": newid,
+                    "scene_revision": basrev}}))
+            assert after_artifacts13["status"] == "succeeded"
+            assert after_artifacts13["scene_revision"] == basrev
+            record["bas13_gui"] = {"jobs": bas13_proofs,
+                                   "scene_revision_unchanged": True,
+                                   "isolated_subprocess": True,
+                                   "no_partial_publish": True}
+
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 53,
                                        "after_revision": rev + 54,
                                        "backup_id": restored["result"]["snapshot_id"]}
@@ -957,6 +1087,7 @@ def main():
     # it never appears in command-line arguments or log artifacts.
     os.environ["BLENDER_MCP_SOCKET_TOKEN"] = secrets.token_urlsafe(32)
     os.environ["BLENDER_MCP_PROFILE"] = "studio-local"
+    os.environ["BLENDER_MCP_RENDER_BIN"] = str(blender)
     done = output / "done"
     log_path = output / "blender-gui.log"
     log = log_path.open("w")
@@ -983,7 +1114,7 @@ def main():
                 time.sleep(0.5)
         else:
             raise RuntimeError("Blender GUI socket did not become ready")
-        asyncio.run(asyncio.wait_for(accept(port, record), timeout=100))
+        asyncio.run(asyncio.wait_for(accept(port, record), timeout=220))
         record["bas09_socket_cases"] = bas09_socket_cases(port)
         asyncio.run(asyncio.wait_for(bas09_reconnect_case(port, record), timeout=40))
         done.write_text("done\n")
