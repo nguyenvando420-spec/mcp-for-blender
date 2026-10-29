@@ -85,3 +85,53 @@ def test_reject_incomplete_scene_or_missing_camera():
                 "camera": "Cam"}
     observed = {"objects": [{"name": "Cube", "type": "MESH", "collections": ["A"]}]}
     assert "camera" in m.check_scene(expected, observed)[0]
+
+
+
+def test_reject_nested_symlink(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "session.log").write_text("session", encoding="utf-8")
+    (tmp_path / "shortcut").symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        m.safe_read(tmp_path, "shortcut/session.log")
+
+
+def test_reject_oversized_evidence_without_reading(tmp_path):
+    path = tmp_path / "untrusted.blend"
+    with path.open("wb") as handle:
+        handle.truncate(512 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError, match="512 MiB"):
+        m.safe_read(tmp_path, "untrusted.blend")
+
+
+def test_malformed_png_must_fail():
+    assert not m.validate_png(b"not a PNG")
+    # CRC/stream corruption cannot be accepted from a magic-byte-only image.
+    assert not m.validate_png(m.PNG_MAGIC + b"junk")
+
+
+def test_attempt_rows_must_be_objects(tmp_path):
+    meta = dict(run_id="unit", client_name="Claude", client_version="test",
+                model_name="model", model_version="test", blender_version="4.5.15",
+                source_commit="a" * 40, environment={"runner": "test"},
+                suite_sha256=m.suite_digest(SUITE_FILE),
+                cases=[{"id": "BAS14-01", "attempts": ["not a dict"]}])
+    result = m.grade(suite(), m.suite_digest(SUITE_FILE), meta, tmp_path)
+    assert not result["accepted"]
+    assert result["first_pass"] == 0
+
+
+def test_overall_threshold_cannot_override_missing_safety(monkeypatch, tmp_path):
+    # This is a scorer-only unit fixture, not a real Blender benchmark.
+    monkeypatch.setattr(m, "grade_attempt", lambda root, case, attempt: [])
+    run = dict(run_id="unit", client_name="Claude", client_version="test",
+               model_name="model", model_version="test", blender_version="4.5.15",
+               source_commit="a" * 40, environment={"runner": "test"},
+               suite_sha256=m.suite_digest(SUITE_FILE),
+               cases=[{"id": f"BAS14-{i:02d}", "attempts": [{"attempt": 1}]}
+                      for i in range(1, 20)])
+    result = m.grade(suite(), m.suite_digest(SUITE_FILE), run, tmp_path)
+    assert result["first_pass"] == 19
+    assert not result["safety_gate"]
+    assert not result["accepted"]
