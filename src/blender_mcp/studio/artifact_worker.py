@@ -146,7 +146,9 @@ class ArtifactWorker:
         if not (owner_id and idempotency_key) or not 1 <= timeout_seconds <= 3600:
             raise ValueError("invalid_job_parameters")
         output = Path(output)
-        if (not output.is_absolute() or output == self.root or self.root not in output.parents
+        if (not output.is_absolute() or ".." in output.parts or output == self.root
+                or self.root not in output.parents
+                or self.root not in output.resolve(strict=False).parents
                 or output.is_symlink() or not output.parent.is_dir()):
             raise ValueError("destination_must_be_new_sandbox_directory")
         snapshot = Path(snapshot).resolve(strict=True)
