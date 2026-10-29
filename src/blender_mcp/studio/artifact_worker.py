@@ -68,9 +68,12 @@ def _validate_render(path, width, height):
             break
     if not chunks or position != len(payload):
         raise ValueError("png_missing_data")
-    pixels = zlib.decompress(b"".join(chunks), max_length=MAX_FILE)
-    if len(pixels) < width * height:
-        raise ValueError("png_invalid_pixel_data")
+    decoder = zlib.decompressobj()
+    pixels = decoder.decompress(b"".join(chunks), MAX_FILE)
+    if not decoder.eof or decoder.unconsumed_tail or not pixels:
+        raise ValueError("png_decode_failed")
+    if len(pixels) < width * height or len(set(pixels[:min(len(pixels), 1000000)])) < 2:
+        raise ValueError("png_invalid_or_blank_pixel_data")
 
 
 class ArtifactWorker:
@@ -236,9 +239,22 @@ class ArtifactWorker:
             metadata = json.loads((outputs / "run.json").read_text(encoding="utf-8"))
             if metadata["kind"] != task["kind"]:
                 raise ValueError("worker_kind_mismatch")
+            details_path = outputs / "render-details.json"
+            details_path.write_text(json.dumps({
+                "camera": metadata.get("camera"),
+                "engine": metadata.get("engine"),
+                "samples": metadata.get("samples"),
+                "resolution": metadata.get("resolution"),
+                "blender_version": metadata["blender_version"],
+                "kind": metadata["kind"],
+                "export_formats": metadata.get("formats"),
+                "export_object_ids": metadata.get("objects_requested"),
+                "snapshot_sha256": row["snapshot_sha256"],
+                "scene_revision": row["scene_revision"],
+            }, sort_keys=True), encoding="utf-8")
             blobs = []
-            for filename in metadata["files"]:
-                if filename not in ("still.png", "scene.glb", "scene.blend"):
+            for filename in list(metadata["files"]) + ["render-details.json"]:
+                if filename not in ("still.png", "scene.glb", "scene.blend", "render-details.json"):
                     raise ValueError("unexpected_artifact")
                 path = outputs / filename
                 if (path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_FILE):
@@ -259,7 +275,7 @@ class ArtifactWorker:
             for filename, nbytes, digest in blobs:
                 artifact_list.append({
                     "artifact_id": str(uuid4()), "job_id": job_id,
-                    "kind": filename.split(".")[-1],
+                    "kind": filename.split(".")[-1] if filename != "render-details.json" else "other",
                     "uri": (Path(row["output"]) / filename).as_uri(),
                     "bytes": nbytes, "sha256": digest, "version": 1,
                     "provenance": {
@@ -286,7 +302,12 @@ class ArtifactWorker:
                         return
                 if destination.exists() or destination.is_symlink():
                     raise ValueError("destination_race")
-                os.rename(outputs, destination)
+                os.mkdir(destination, 0o700)
+                try:
+                    os.replace(outputs, destination)
+                except Exception:
+                    destination.rmdir()
+                    raise
                 with self._connect() as db:
                     db.execute("""UPDATE jobs SET state='succeeded',progress=1,
                         manifest=?,updated_at=? WHERE job_id=?""",
