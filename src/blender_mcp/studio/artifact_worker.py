@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from .contracts import ArtifactManifest
+from .artifact_publish import verified_delivery, backup_delivery, atomic_exchange, _sync_dir
 
 MAX_BLEND = 512 * 1024 * 1024
 MAX_FILE = 512 * 1024 * 1024
@@ -89,7 +90,7 @@ class ArtifactWorker:
             raise ValueError("source_commit_required")
         self.source_commit = source_commit
         self.work = self.root / ".bas13-worker"
-        for name in (".", "stage", "logs"):
+        for name in (".", "stage", "logs", "backups"):
             directory = self.work if name == "." else self.work / name
             directory.mkdir(mode=0o700, exist_ok=True)
         self.lock = threading.RLock()
@@ -108,7 +109,19 @@ class ArtifactWorker:
                 stop_confirmed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 error TEXT, manifest TEXT,
+                overwrite INTEGER NOT NULL DEFAULT 0,
+                expected_sha256 TEXT, confirmation_hash TEXT, backup TEXT,
                 UNIQUE(owner_id,idempotency_key)
+            )""")
+            for column, declaration in (
+                    ("overwrite", "INTEGER NOT NULL DEFAULT 0"),
+                    ("expected_sha256", "TEXT"), ("confirmation_hash", "TEXT"),
+                    ("backup", "TEXT")):
+                existing = {field[1] for field in connection.execute("PRAGMA table_info(jobs)")}
+                if column not in existing:
+                    connection.execute("ALTER TABLE jobs ADD COLUMN " + column + " " + declaration)
+            connection.execute("""CREATE TABLE IF NOT EXISTS confirmed_tokens (
+                token_hash TEXT PRIMARY KEY, job_id TEXT NOT NULL
             )""")
             connection.execute("""UPDATE jobs SET state='interrupted_unknown',
                 error='worker_restart_requires_manual_reconcile',updated_at=?
@@ -142,7 +155,8 @@ class ArtifactWorker:
         return {k: v for k, v in row.items() if k not in ("snapshot", "spec", "payload_hash")}
 
     def submit(self, *, owner_id, request_id, idempotency_key, scene_id,
-               scene_revision, snapshot, output, spec, timeout_seconds):
+               scene_revision, snapshot, output, spec, timeout_seconds,
+               overwrite=False, expected_sha256=None, confirmation_token=None):
         if not (owner_id and idempotency_key) or not 1 <= timeout_seconds <= 3600:
             raise ValueError("invalid_job_parameters")
         output = Path(output)
@@ -165,10 +179,20 @@ class ArtifactWorker:
         with snapshot.open("rb") as fp:
             if fp.read(7) != b"BLENDER":
                 raise ValueError("invalid_input: invalid_verified_snapshot")
+        if type(overwrite) is not bool:
+            raise ValueError("invalid_input: overwrite must be boolean")
+        if overwrite:
+            if (not isinstance(expected_sha256, str) or len(expected_sha256) != 64
+                    or not all(k in "0123456789abcdef" for k in expected_sha256)
+                    or not isinstance(confirmation_token, str) or not confirmation_token):
+                raise ValueError("invalid_input: confirmed overwrite missing checksum/token")
+        elif expected_sha256 is not None or confirmation_token is not None:
+            raise ValueError("invalid_input: extraneous overwrite fields")
         expected = _sha(snapshot)
         payload = {"scene": scene_id, "revision": scene_revision,
                    "snapshot_sha": expected, "output": str(output),
-                   "spec": spec, "timeout": timeout_seconds}
+                   "spec": spec, "timeout": timeout_seconds,
+                   "overwrite": overwrite, "expected_sha256": expected_sha256}
         digest = hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
         with self.lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -178,17 +202,33 @@ class ArtifactWorker:
                 if row["payload_hash"] != digest:
                     raise ValueError("idempotency_conflict")
                 return dict(row)
-            if output.exists() or output.is_symlink():
-                raise ValueError("conflict: destination_must_be_new_sandbox_directory")
+            if output.is_symlink():
+                raise ValueError("conflict: destination_symlink_denied")
+            if overwrite:
+                if verified_delivery(output) != expected_sha256:
+                    raise ValueError("conflict: destination checksum mismatch")
+                token_hash = hashlib.sha256(confirmation_token.encode()).hexdigest()
+                if db.execute("SELECT 1 FROM confirmed_tokens WHERE token_hash=?",
+                              (token_hash,)).fetchone():
+                    raise ValueError("conflict: confirmation token already consumed")
+            else:
+                if output.exists():
+                    raise ValueError("conflict: destination_must_be_new_sandbox_directory")
+                token_hash = None
             job_id = str(uuid4())
             now = _now()
             db.execute("""INSERT INTO jobs(job_id,owner_id,idempotency_key,payload_hash,
                 request_id,scene_id,scene_revision,spec,snapshot,snapshot_sha256,
-                output,timeout_seconds,state,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)""",
+                output,timeout_seconds,state,created_at,updated_at,
+                overwrite,expected_sha256,confirmation_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?,?,?,?)""",
                 (job_id, owner_id, idempotency_key, digest, request_id, scene_id,
                  scene_revision, json.dumps(spec), str(snapshot), expected,
-                 str(output), timeout_seconds, now, now))
+                 str(output), timeout_seconds, now, now,
+                 int(overwrite), expected_sha256, token_hash))
+            if token_hash:
+                db.execute("INSERT INTO confirmed_tokens(token_hash,job_id) VALUES(?,?)",
+                           (token_hash, job_id))
         threading.Thread(target=self._run, args=(job_id,), daemon=True).start()
         return self.get(job_id, owner_id)
 
@@ -196,6 +236,8 @@ class ArtifactWorker:
         process = None
         stage = self.work / "stage" / job_id
         log = self.work / "logs" / (job_id + ".log")
+        exchanged = False
+        keep_staging = False
         try:
             with self.lock, self._connect() as db:
                 row = self._get(db, job_id)
@@ -311,33 +353,70 @@ class ArtifactWorker:
                 manifest.model_dump_json(indent=2), encoding="utf-8")
             (outputs / "run.json").unlink()
             destination = Path(row["output"])
-            # No overwrite and no partially published artifact directory.
+            # Publish a complete directory, never files independently. A
+            # confirmed overwrite uses an fsynced backup and Linux atomic swap.
             with self.lock:
                 with self._connect() as db:
                     if self._get(db, job_id)["cancel_requested"]:
                         db.execute("UPDATE jobs SET state='cancelled',stop_confirmed=1,updated_at=? WHERE job_id=?",
                                    (_now(), job_id))
                         return
-                if destination.exists() or destination.is_symlink():
-                    raise ValueError("destination_race")
-                os.mkdir(destination, 0o700)
-                try:
-                    os.replace(outputs, destination)
-                except Exception:
-                    destination.rmdir()
-                    raise
-                with self._connect() as db:
-                    db.execute("""UPDATE jobs SET state='succeeded',progress=1,
-                        manifest=?,updated_at=? WHERE job_id=?""",
-                        (str(destination / "manifest.json"), _now(), job_id))
+                if row["overwrite"]:
+                    if destination.is_symlink() or verified_delivery(destination) != row["expected_sha256"]:
+                        raise ValueError("conflict: destination changed before publish")
+                    backup = self.work / "backups" / job_id
+                    backup_delivery(destination, backup, row["expected_sha256"])
+                    # Durable intent journal remains in staging until the DB
+                    # commit and gives operators a recovery anchor after crash.
+                    journal = stage / "publish-journal.json"
+                    journal.write_text(json.dumps({
+                        "job_id": job_id, "destination": str(destination),
+                        "backup": str(backup),
+                        "expected_sha256": row["expected_sha256"],
+                        "new_sha256": _sha(outputs / "manifest.json"),
+                        "state": "prepared",
+                    }), encoding="utf-8")
+                    _sync_dir(stage)
+                    atomic_exchange(outputs, destination)
+                    exchanged = True
+                    # stage/outputs now holds the old version. Keep until
+                    # SQLite success is durable and the backup is verified.
+                    with self._connect() as db:
+                        db.execute("""UPDATE jobs SET state='succeeded',progress=1,
+                            manifest=?,backup=?,updated_at=? WHERE job_id=?""",
+                            (str(destination / "manifest.json"), str(backup), _now(), job_id))
+                else:
+                    if destination.exists() or destination.is_symlink():
+                        raise ValueError("conflict: destination_race")
+                    os.mkdir(destination, 0o700)
+                    try:
+                        os.replace(outputs, destination)
+                    except Exception:
+                        destination.rmdir()
+                        raise
+                    with self._connect() as db:
+                        db.execute("""UPDATE jobs SET state='succeeded',progress=1,
+                            manifest=?,updated_at=? WHERE job_id=?""",
+                            (str(destination / "manifest.json"), _now(), job_id))
         except Exception as exc:
+            # Roll back with the same atomic exchange if any post-publication
+            # step fails. A failed rollback is UNKNOWN, never 'failed'.
+            if exchanged:
+                try:
+                    with self.lock:
+                        atomic_exchange(stage / "outputs", Path(row["output"]))
+                        exchanged = False
+                except Exception:
+                    keep_staging = True
             with self.lock, self._connect() as db:
-                db.execute("UPDATE jobs SET state='failed',error=?,updated_at=? WHERE job_id=?",
-                           (type(exc).__name__ + ":" + str(exc)[:140],_now(),job_id))
+                db.execute("UPDATE jobs SET state=?,error=?,updated_at=? WHERE job_id=?",
+                           ("interrupted_unknown" if keep_staging else "failed",
+                            type(exc).__name__ + ":" + str(exc)[:140],_now(),job_id))
         finally:
             with self.lock:
                 self.processes.pop(job_id, None)
-            shutil.rmtree(stage, ignore_errors=True)
+            if not keep_staging:
+                shutil.rmtree(stage, ignore_errors=True)
 
     def cancel(self, job_id, owner_id):
         self.get(job_id, owner_id)
