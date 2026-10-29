@@ -619,6 +619,7 @@
           "type": "array"
         },
         "energy": {
+          "maximum": 100000,
           "minimum": 0,
           "title": "Energy",
           "type": "number"
@@ -667,6 +668,59 @@
           ],
           "title": "Location",
           "type": "array"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "rotation_euler": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotation Euler"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0.01,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size"
         }
       },
       "required": [
@@ -1021,6 +1075,11 @@
     "SceneInspect": {
       "additionalProperties": false,
       "properties": {
+        "bind_missing_ids": {
+          "default": false,
+          "title": "Bind Missing Ids",
+          "type": "boolean"
+        },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
@@ -1120,11 +1179,6 @@
           ],
           "default": null,
           "title": "Scene Revision"
-        },
-        "bind_missing_ids": {
-          "default": false,
-          "title": "Bind Missing Ids",
-          "type": "boolean"
         }
       },
       "required": [
@@ -1511,7 +1565,13 @@
     },
     "SetCamera": {
       "additionalProperties": false,
+      "description": "Create/update a camera, optionally framing scene geometry by world bounds.",
       "properties": {
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
         "camera_id": {
           "anyOf": [
             {
@@ -1525,6 +1585,34 @@
           "default": null,
           "title": "Camera Id"
         },
+        "clip_end": {
+          "anyOf": [
+            {
+              "maximum": 100000,
+              "minimum": 0.1,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clip End"
+        },
+        "clip_start": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0.001,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clip Start"
+        },
         "contract": {
           "$ref": "#/$defs/ContractVersion"
         },
@@ -1532,6 +1620,18 @@
           "const": "scene",
           "title": "Effect Scope",
           "type": "string"
+        },
+        "frame_scene": {
+          "default": false,
+          "title": "Frame Scene",
+          "type": "boolean"
+        },
+        "framing_margin": {
+          "default": 1.15,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Framing Margin",
+          "type": "number"
         },
         "idempotency_key": {
           "anyOf": [
@@ -1548,28 +1648,57 @@
           "title": "Idempotency Key"
         },
         "lens_mm": {
-          "default": 50,
-          "exclusiveMinimum": 0,
-          "maximum": 1000,
-          "title": "Lens Mm",
-          "type": "number"
-        },
-        "location": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
+          "anyOf": [
             {
+              "maximum": 300,
+              "minimum": 1,
               "type": "number"
             },
             {
-              "type": "number"
-            },
-            {
-              "type": "number"
+              "type": "null"
             }
           ],
-          "title": "Location",
-          "type": "array"
+          "default": null,
+          "title": "Lens Mm"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
         },
         "operation": {
           "const": "studio_set_camera",
@@ -1581,22 +1710,58 @@
           "title": "Request Id",
           "type": "string"
         },
-        "rotation_euler": {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
+        "resolution_x": {
+          "anyOf": [
             {
-              "type": "number"
+              "maximum": 8192,
+              "minimum": 64,
+              "type": "integer"
             },
             {
-              "type": "number"
-            },
-            {
-              "type": "number"
+              "type": "null"
             }
           ],
-          "title": "Rotation Euler",
-          "type": "array"
+          "default": null,
+          "title": "Resolution X"
+        },
+        "resolution_y": {
+          "anyOf": [
+            {
+              "maximum": 8192,
+              "minimum": 64,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolution Y"
+        },
+        "rotation_euler": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rotation Euler"
         },
         "scene_id": {
           "anyOf": [
@@ -1623,14 +1788,25 @@
           ],
           "default": null,
           "title": "Scene Revision"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Id"
         }
       },
       "required": [
         "request_id",
         "effect_scope",
-        "operation",
-        "location",
-        "rotation_euler"
+        "operation"
       ],
       "title": "SetCamera",
       "type": "object"

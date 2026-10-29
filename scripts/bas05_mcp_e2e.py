@@ -610,6 +610,14 @@ async def accept(port, record):
             assert empty["status"] == "succeeded", empty
             blank = json.loads(empty["result"]["summary"])
             assert blank["object_count"] == 0 and blank["camera"] is None
+            empty_framing = unpack(await client.call_tool("studio_set_camera", {
+                "request": {"operation": "studio_set_camera",
+                            "request_id": str(uuid4()), "effect_scope": "scene",
+                            "scene_id": empty["scene_id"],
+                            "scene_revision": empty["scene_revision"],
+                            "idempotency_key": "bas11-empty-scene",
+                            "frame_scene": True}}))
+            assert empty_framing["error"]["code"] == "invalid_input", empty_framing
             no_camera = unpack(await client.call_tool("studio_capture_viewport", {"request": {
                 "operation": "studio_capture_viewport", "request_id": str(uuid4()),
                 "effect_scope": "read", "scene_id": empty["scene_id"],
@@ -684,6 +692,143 @@ async def accept(port, record):
             record["bas10_gui"] = {"operations": bas10_operations, "uuid": cube_uuid,
                                    "unknown_id_denied": True, "arbitrary_graph_denied": True,
                                    "material_id_exposed": True, "last_revision": basrev}
+
+            # BAS-11 real MCP -> authenticated socket -> Blender GUI main thread.
+            # Headless CPU render is independent; this tests live GUI camera mode.
+            assert {"studio_set_camera", "studio_set_light"} <= toolset
+            assert {"studio_set_camera", "studio_set_light"} <= set(handshake["operations"])
+            bas11_ids = {"cameras": [], "lights": []}
+            bas11_start = basrev
+
+            async def bas11_call(operation, key, **fields):
+                nonlocal basrev
+                raw = {"operation": operation, "request_id": str(uuid4()),
+                       "effect_scope": "scene", "scene_id": newid,
+                       "scene_revision": basrev, "idempotency_key": key, **fields}
+                result11 = unpack(await client.call_tool(operation, {"request": raw}))
+                assert result11["status"] == "succeeded", (key, result11)
+                assert result11["scene_revision"] == basrev + 1, (key, result11)
+                basrev += 1
+                return raw, result11
+
+            original_scene11 = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "scene_id": newid, "scene_revision": basrev, "limit": 200}}))
+            original11 = json.loads(original_scene11["result"]["summary"])
+            camera_before11 = original11["camera"]
+            for ix in range(2):
+                args11 = ({"target_id": cube_id, "lens_mm": 45,
+                           "resolution_x": 960, "resolution_y": 540}
+                          if ix == 0 else {"location": [8, -12, 7],
+                                           "rotation_euler": [1.1, 0, 0.5],
+                                           "lens_mm": 35, "active": False})
+                raw11, created11 = await bas11_call(
+                    "studio_set_camera", "bas11-gui-camera-" + str(ix),
+                    name="BAS11_GUI_CAMERA_" + str(ix), **args11)
+                ident11 = created11["result"]["objects"][0]["id"]
+                assert created11["result"]["objects"][0]["kind"] == "camera"
+                assert created11["result"]["scene_diff"]["created"] == [ident11]
+                bas11_ids["cameras"].append(ident11)
+                replay11 = unpack(await client.call_tool("studio_set_camera", {
+                    "request": {**raw11, "request_id": str(uuid4())}}))
+                assert replay11["status"] == "succeeded" and replay11["scene_revision"] == basrev
+                assert replay11["result"]["objects"][0]["id"] == ident11
+                assert replay11["result"]["summary"] == "Idempotent replay"
+            for typ, energy in (("AREA", 350), ("POINT", 90), ("SUN", 2)):
+                light_spec = {"kind": "light", "light_type": typ, "energy": energy,
+                              "name": "BAS11_GUI_" + typ, "color": [1, .85, .7],
+                              "location": [1, -4, 7]}
+                _, light11 = await bas11_call(
+                    "studio_set_light", "bas11-gui-light-" + typ, spec=light_spec)
+                lamp_id = light11["result"]["objects"][0]["id"]
+                assert light11["result"]["objects"][0]["kind"] == "light"
+                assert light11["result"]["scene_diff"]["created"] == [lamp_id]
+                bas11_ids["lights"].append(lamp_id)
+            _, updated_light11 = await bas11_call(
+                "studio_set_light", "bas11-gui-area-update",
+                spec={"kind": "light", "light_id": bas11_ids["lights"][0],
+                      "name": "BAS11_GUI_AREA", "light_type": "AREA", "energy": 450,
+                      "color": [1, .85, .7], "location": [1, -4, 7],
+                      "size": 2})
+            assert updated_light11["result"]["scene_diff"]["updated"] == [
+                bas11_ids["lights"][0]]
+            assert updated_light11["result"]["objects"][0]["id"] == bas11_ids["lights"][0]
+            _, world11 = await bas11_call("studio_set_light", "bas11-gui-world",
+                                        spec={"kind": "world", "color": [.1, .2, .35],
+                                              "strength": .8})
+            assert world11["result"]["scene_diff"]["created"] == []
+            # Request data validation must fail without touching Blender scene.
+            bad11 = unpack(await client.call_tool("studio_set_light", {"request": {
+                "operation": "studio_set_light", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas11-invalid-energy",
+                "spec": {"kind": "light", "light_type": "SUN", "energy": 100001,
+                         "color": [1, 1, 1], "location": [0, 0, 3]}}}))
+            assert bad11["error"]["code"] == "invalid_input", bad11
+            missing11 = unpack(await client.call_tool("studio_set_camera", {"request": {
+                "operation": "studio_set_camera", "request_id": str(uuid4()),
+                "effect_scope": "scene", "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas11-missing-target",
+                "target_id": str(uuid4())}}))
+            assert missing11["error"]["code"] == "object_not_found", missing11
+            before11 = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "scene_id": newid, "scene_revision": basrev, "limit": 200}}))
+            before11_data = json.loads(before11["result"]["summary"])
+            assert before11_data["camera"] == "BAS11_GUI_CAMERA_0", before11_data["camera"]
+            assert before11_data["frame"] == original11["frame"]
+            assert before11_data["selected"] == original11["selected"]
+            assert all(any(x["object_id"] == oid for x in before11_data["objects"])
+                       for oid in bas11_ids["cameras"] + bas11_ids["lights"])
+            capture11 = unpack(await client.call_tool("studio_capture_viewport", {
+                "request": {"operation": "studio_capture_viewport",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "scene_id": newid, "scene_revision": basrev,
+                            "mode": "camera", "max_size": 320}}))
+            assert capture11["status"] == "succeeded", capture11
+            image11 = capture11["result"]["capture"]
+            png11 = base64.b64decode(image11["image_base64"], validate=True)
+            assert png11.startswith(bytes.fromhex("89504e470d0a1a0a"))
+            assert hashlib.sha256(png11).hexdigest() == image11["sha256"]
+            (Path(os.environ["BLENDER_MCP_STUDIO_ROOT"]).parent /
+             "bas11-gui-camera.png").write_bytes(png11)
+            after11 = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read",
+                            "scene_id": newid, "scene_revision": basrev, "limit": 200}}))
+            after11_data = json.loads(after11["result"]["summary"])
+            assert after11_data["scene_fingerprint"] == before11_data["scene_fingerprint"]
+            assert after11_data["selected"] == before11_data["selected"]
+            assert after11_data["frame"] == before11_data["frame"]
+            assert after11_data["camera"] == before11_data["camera"]
+            assert after11["scene_revision"] == basrev
+            # Switching between the two BAS-11 cameras must be reversible.
+            _, switched11 = await bas11_call(
+                "studio_set_camera", "bas11-gui-switch",
+                camera_id=bas11_ids["cameras"][1], active=True)
+            assert switched11["result"]["scene_diff"]["updated"] == [
+                bas11_ids["cameras"][1]]
+            switched_view11 = unpack(await client.call_tool("studio_scene_inspect", {
+                "request": {"operation": "studio_scene_inspect",
+                            "request_id": str(uuid4()), "effect_scope": "read"}}))
+            assert json.loads(switched_view11["result"]["summary"])["camera"] == "BAS11_GUI_CAMERA_1"
+            _, switched_back11 = await bas11_call(
+                "studio_set_camera", "bas11-gui-switch-back",
+                camera_id=bas11_ids["cameras"][0], active=True)
+            assert switched_back11["result"]["scene_diff"]["updated"] == [
+                bas11_ids["cameras"][0]]
+            record["bas11_gui"] = {
+                "camera_ids": bas11_ids["cameras"], "light_ids": bas11_ids["lights"],
+                "world_configured": True, "active_camera": "BAS11_GUI_CAMERA_0",
+                "camera_before": camera_before11,
+                "revision_before": bas11_start, "revision_after": basrev,
+                "camera_png_sha256": image11["sha256"],
+                "camera_png_bytes": len(png11),
+                "idempotent_replay": True, "negative_input_and_missing_target": True,
+                "selection_frame_preserved": True, "offscreen_capture_scene_stable": True,
+                "interactive_gui": "Xvfb real Blender UI (automated, not human mouse)"}
 
             record["bas12_restore"] = {"passed": True, "before_revision": rev + 53,
                                        "after_revision": rev + 54,
@@ -858,6 +1003,22 @@ def main():
         assert verify_ids.returncode == 0, verify_ids.stderr[-1000:]
         assert "BAS08_IDS_REOPEN_PASS" in verify_ids.stdout
         record["bas08_binding"]["headless_reopen_passed"] = True
+        # Independent process verifies the BLEND written by the actual Xvfb
+        # GUI includes every BAS-11 UUID, active camera and node world state.
+        bas11_gui = record["bas11_gui"]
+        gui_reopen = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python",
+            str(ROOT / "scripts" / "bas11_gui_reopen.py"), "--",
+            str(blend), bas11_gui["active_camera"],
+            *bas11_gui["camera_ids"], *bas11_gui["light_ids"],
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas11-gui-reopen.log").write_text(
+            gui_reopen.stdout + gui_reopen.stderr)
+        assert gui_reopen.returncode == 0, gui_reopen.stderr[-1000:]
+        assert "BAS11_GUI_REOPEN_PASS" in gui_reopen.stdout
+        record["bas11_gui"]["independent_reopen_passed"] = True
+
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat

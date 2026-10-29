@@ -2412,6 +2412,18 @@ def studio_assign_material(request: dict) -> dict:
 
 
 @mcp.tool()
+def studio_set_camera(request: dict) -> dict:
+    """Create/update a camera or frame target bounds without modifying viewport selection."""
+    return _studio_gateway().invoke(request, "studio_set_camera")
+
+
+@mcp.tool()
+def studio_set_light(request: dict) -> dict:
+    """Create/update a typed light or scene-local world background."""
+    return _studio_gateway().invoke(request, "studio_set_light")
+
+
+@mcp.tool()
 def studio_delete_object(request: dict) -> dict:
     """Delete only with bound confirmation and verified pre-delete snapshots."""
     return _studio_gateway().invoke(request, "studio_delete_object")

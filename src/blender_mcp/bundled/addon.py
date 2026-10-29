@@ -1492,7 +1492,7 @@ class BlenderMCPServer:
             return True, ""
         if self.profile == "studio-local" and (cmd_type in ("studio_create_object_v1", "studio_create_text_v1",
                 "studio_set_transform_v1", "studio_manage_collection_v1",
-                "studio_assign_material_v1") or
+                "studio_assign_material_v1", "studio_set_camera_v1", "studio_set_light_v1") or
                 (cmd_type == "studio_delete_object_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")
                  and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32) or
                 (cmd_type == "studio_scene_snapshot_v1" and os.getenv("BLENDER_MCP_STUDIO_ROOT")) or
@@ -1714,6 +1714,8 @@ class BlenderMCPServer:
             "studio_set_transform_v1": self.studio_set_transform_v1,
             "studio_manage_collection_v1": self.studio_manage_collection_v1,
             "studio_assign_material_v1": self.studio_assign_material_v1,
+            "studio_set_camera_v1": self.studio_set_camera_v1,
+            "studio_set_light_v1": self.studio_set_light_v1,
             "studio_delete_object_v1": self.studio_delete_object_v1,
             "studio_scene_snapshot_v1": self.studio_scene_snapshot_v1,
             "studio_scene_restore_v1": self.studio_scene_restore_v1,
@@ -1832,6 +1834,8 @@ class BlenderMCPServer:
                 "studio_set_transform_v1",
                 "studio_manage_collection_v1",
                 "studio_assign_material_v1",
+                "studio_set_camera_v1",
+                "studio_set_light_v1",
                 "studio_delete_object_v1",
                 "studio_scene_snapshot_v1",
                 "studio_scene_restore_v1",
@@ -2285,6 +2289,17 @@ class BlenderMCPServer:
 
         add(["scene", scene.name_full, scene.camera.name_full if scene.camera else None,
              scene.world.name_full if scene.world else None])
+        add(["render",scene.render.resolution_x,scene.render.resolution_y,
+             float(scene.render.pixel_aspect_x).hex(),float(scene.render.pixel_aspect_y).hex()])
+        if scene.world is not None:
+            world=scene.world
+            add(["world",world.name_full,vec(world.color),bool(world.use_nodes)])
+            if world.use_nodes and world.node_tree:
+                backgrounds=[n for n in world.node_tree.nodes if n.type=="BACKGROUND"]
+                if len(backgrounds)>16: raise ValueError("conflict: too many world background nodes")
+                for node in backgrounds:
+                    add(["world-bg",node.name,vec(node.inputs["Color"].default_value),
+                         float(node.inputs["Strength"].default_value).hex()])
         for obj in objects:
             add(["object", obj.name_full, obj.type, obj.get("_bas05_object_id"),
                  vec(obj.location), vec(obj.rotation_euler), vec(obj.scale),
@@ -2321,7 +2336,11 @@ class BlenderMCPServer:
                 for vertex in data.vertices:
                     add(["v", vec(vertex.co)])
             if obj.type == "CAMERA" and data is not None:
-                add(["camera", data.name_full, float(data.lens).hex()])
+                add(["camera", data.name_full, float(data.lens).hex(),
+                     float(data.clip_start).hex(),float(data.clip_end).hex()])
+            if obj.type == "LIGHT" and data is not None:
+                add(["light", data.name_full, data.type,float(data.energy).hex(),vec(data.color),
+                     float(data.size).hex() if data.type == "AREA" else None])
             if obj.type == "FONT" and data is not None:
                 add(["font", data.body])
             if data is not None and hasattr(data, "materials"):
@@ -3035,6 +3054,193 @@ class BlenderMCPServer:
             return object_id, obj.name
         return self._bas07_execute("assign_material", scene_id, scene_revision,
                                    idempotency_key, [object_id, spec], apply)
+
+    # BAS-11 typed camera/light operations; Blender main thread only.
+    def studio_set_camera_v1(self, scene_id, scene_revision, idempotency_key,
+                             camera_id=None, name=None, location=None, rotation_euler=None,
+                             lens_mm=None, clip_start=None, clip_end=None,
+                             target_id=None, frame_scene=False, framing_margin=1.15,
+                             active=True, resolution_x=None, resolution_y=None):
+        from mathutils import Vector
+        camera_id = self._bas07_uuid(camera_id) if camera_id else None
+        target_id = self._bas07_uuid(target_id) if target_id else None
+        name = self._bas07_name(name) if name else None
+        loc = self._bas07_vec(location, "location", 100000)
+        rot = self._bas07_vec(rotation_euler, "rotation_euler", 1000)
+        def bound(v, lo, hi, label):
+            if v is not None and (type(v) not in (float, int) or not math.isfinite(v) or not lo <= v <= hi):
+                raise ValueError("invalid_input: " + label)
+        for v, lo, hi, label in ((lens_mm,1,300,"lens"), (clip_start,.001,100,"clip_start"),
+                (clip_end,.1,100000,"clip_end"), (framing_margin,1,2,"margin")):
+            bound(v,lo,hi,label)
+        if type(active) is not bool or type(frame_scene) is not bool:
+            raise ValueError("invalid_input: camera flags")
+        if (resolution_x is None) != (resolution_y is None) or any(
+                type(x) is not int or not 64 <= x <= 8192 for x in (resolution_x,resolution_y) if x is not None):
+            raise ValueError("invalid_input: camera resolution")
+        if target_id and frame_scene or (target_id or frame_scene) and (loc is not None or rot is not None):
+            raise ValueError("invalid_input: framing options")
+        if not (camera_id or target_id or frame_scene) and (loc is None or rot is None):
+            raise ValueError("invalid_input: camera transform required")
+        payload=[camera_id,name,loc,rot,lens_mm,clip_start,clip_end,target_id,frame_scene,
+                 framing_margin,active,resolution_x,resolution_y]
+        def apply(scene):
+            obj = self._bas07_find(scene,camera_id) if camera_id else None
+            if obj and (obj.type != "CAMERA" or obj.library or obj.data.library or obj.data.users > 1
+                        or any(s != scene for s in obj.users_scene)):
+                raise ValueError("permission_denied: camera shared, linked or invalid")
+            lens = lens_mm if lens_mm is not None else (obj.data.lens if obj else 50)
+            new_loc,new_rot=loc,rot
+            rx,ry=resolution_x or scene.render.resolution_x,resolution_y or scene.render.resolution_y
+            if target_id or frame_scene:
+                if target_id:
+                    matches=[o for o in scene.objects if o.get("_bas05_object_id")==target_id]
+                    if len(matches)!=1: raise ValueError("object_not_found: target UUID absent or ambiguous")
+                    targets=matches
+                else:
+                    targets=[o for o in scene.objects if o.type in ("MESH","FONT","CURVE","SURFACE","META")]
+                corners=[]
+                for target in targets:
+                    if target.type not in ("MESH","FONT","CURVE","SURFACE","META") or target.library:
+                        raise ValueError("invalid_input: target geometry")
+                    if not target.visible_get(): continue
+                    corners.extend(target.matrix_world @ Vector(v) for v in target.bound_box)
+                    if len(corners)>20000: raise ValueError("capability_unavailable: framing bounds limit")
+                if not corners: raise ValueError("invalid_input: scene empty or target invisible")
+                center=sum(corners,Vector())/len(corners)
+                direction=Vector((1,-1.5,.9)).normalized()
+                quat=(-direction).to_track_quat("-Z","Y")
+                right,up=quat @ Vector((1,0,0)),quat @ Vector((0,1,0))
+                aspect=(rx*scene.render.pixel_aspect_x)/(ry*scene.render.pixel_aspect_y)
+                tan_x=36/(2*lens)
+                tan_y=tan_x/aspect
+                distance=max(.01,max(max(abs((v-center).dot(right))/tan_x,
+                                         abs((v-center).dot(up))/tan_y)-(v-center).dot(direction)
+                                       for v in corners))*framing_margin+.2
+                new_loc,new_rot=center+direction*distance,quat.to_euler()
+                depths=[(v-new_loc).dot(-direction) for v in corners]
+                fit_near=max(.001,min(depths)*.5)
+                fit_far=min(100000,max(1.,max(depths)*1.5))
+            else:
+                fit_near,fit_far=.1,1000.
+            near=clip_start if clip_start is not None else (fit_near if (target_id or frame_scene) else (obj.data.clip_start if obj else .1))
+            far=clip_end if clip_end is not None else (fit_far if (target_id or frame_scene) else (obj.data.clip_end if obj else 1000.))
+            if not .001<=near<far<=100000 or ((target_id or frame_scene) and (near>=min(depths) or far<=max(depths))):
+                raise ValueError("invalid_input: camera clip range excludes target")
+            created=obj is None
+            if created:
+                data=bpy.data.cameras.new((name or "BAS11_Camera")+"_Data")
+                obj=bpy.data.objects.new(name or "BAS11_Camera",data)
+                try: scene.collection.objects.link(obj)
+                except Exception:
+                    bpy.data.objects.remove(obj,do_unlink=True)
+                    bpy.data.cameras.remove(data)
+                    raise
+                oid=str(uuid.uuid4())
+                obj["_bas05_object_id"]=oid
+            else: oid=camera_id
+            old=(scene.camera,scene.render.resolution_x,scene.render.resolution_y)
+            previous=(obj.name,obj.location.copy(),obj.rotation_euler.copy(),obj.data.lens,
+                      obj.data.clip_start,obj.data.clip_end)
+            try:
+                if name: obj.name=name
+                if new_loc is not None: obj.location=new_loc
+                if new_rot is not None: obj.rotation_euler=new_rot
+                obj.data.lens=lens
+                obj.data.clip_start, obj.data.clip_end=near,far
+                if resolution_x is not None:
+                    scene.render.resolution_x,scene.render.resolution_y=rx,ry
+                if active: scene.camera=obj
+            except Exception:
+                scene.camera,scene.render.resolution_x,scene.render.resolution_y=old
+                if created: bpy.data.objects.remove(obj,do_unlink=True)
+                else: obj.name,obj.location,obj.rotation_euler,obj.data.lens,obj.data.clip_start,obj.data.clip_end=previous
+                raise
+            return oid,obj.name
+        return self._bas07_execute("set_camera",scene_id,scene_revision,idempotency_key,payload,apply)
+
+    def studio_set_light_v1(self,scene_id,scene_revision,idempotency_key,spec):
+        if not isinstance(spec,dict) or spec.get("kind") not in ("world","light"):
+            raise ValueError("invalid_input: lighting spec")
+        def valid(value,lo,hi):
+            return type(value) in (int,float) and math.isfinite(value) and lo<=value<=hi
+        def color(value):
+            if not isinstance(value,(list,tuple)) or len(value)!=3 or not all(valid(v,0,1) for v in value):
+                raise ValueError("invalid_input: light/world color")
+            return tuple(value)
+        # Validate everything before entering the mutation callback.
+        if spec["kind"]=="world":
+            if set(spec)!={"kind","color","strength"}: raise ValueError("invalid_input: world fields")
+            rgba=color(spec["color"])
+            if not valid(spec["strength"],0,100): raise ValueError("invalid_input: world strength")
+        else:
+            if set(spec)!={"kind","light_id","name","light_type","energy","color","location","rotation_euler","size"}:
+                raise ValueError("invalid_input: light fields")
+            if spec["light_type"] not in ("POINT","SUN","SPOT","AREA") or not valid(spec["energy"],0,100000):
+                raise ValueError("invalid_input: light type/energy")
+            rgba=color(spec["color"])
+            loc=self._bas07_vec(spec["location"],"location",100000)
+            rot=self._bas07_vec(spec["rotation_euler"],"rotation_euler",1000)
+            if loc is None: raise ValueError("invalid_input: light location")
+            if spec["size"] is not None and (spec["light_type"]!="AREA" or not valid(spec["size"],.01,100)):
+                raise ValueError("invalid_input: light size")
+            ident=self._bas07_uuid(spec["light_id"]) if spec["light_id"] else None
+            if spec["name"]: self._bas07_name(spec["name"])
+        def apply(scene):
+            if spec["kind"]=="world":
+                old=scene.world
+                if old and old.library: raise ValueError("permission_denied: linked world")
+                world=bpy.data.worlds.new("BAS11_World")
+                try:
+                    world.use_nodes=True
+                    bg=world.node_tree.nodes.get("Background")
+                    if bg is None:
+                        bg=world.node_tree.nodes.new("ShaderNodeBackground")
+                        output=world.node_tree.nodes.get("World Output")
+                        if output: world.node_tree.links.new(bg.outputs[0],output.inputs["Surface"])
+                    bg.inputs["Color"].default_value=(*rgba,1)
+                    bg.inputs["Strength"].default_value=float(spec["strength"])
+                    world.color=rgba
+                    scene.world=world
+                except Exception:
+                    scene.world=old
+                    bpy.data.worlds.remove(world,do_unlink=True)
+                    raise
+                return str(scene.get("_bas05_scene_id")),world.name
+            obj=self._bas07_find(scene,ident) if ident else None
+            if obj and (obj.type!="LIGHT" or obj.library or obj.data.library or obj.data.users>1
+                        or any(s!=scene for s in obj.users_scene)):
+                raise ValueError("permission_denied: shared or linked light")
+            created=obj is None
+            if created:
+                data=bpy.data.lights.new((spec["name"] or "BAS11_Light")+"_Data",spec["light_type"])
+                obj=bpy.data.objects.new(spec["name"] or "BAS11_Light",data)
+                try: scene.collection.objects.link(obj)
+                except Exception:
+                    bpy.data.objects.remove(obj,do_unlink=True)
+                    bpy.data.lights.remove(data)
+                    raise
+                ident_now=str(uuid.uuid4())
+                obj["_bas05_object_id"]=ident_now
+            else: ident_now=ident
+            before=(obj.name,obj.location.copy(),obj.rotation_euler.copy(),obj.data.type,
+                    obj.data.energy,tuple(obj.data.color),obj.data.size if obj.data.type=="AREA" else None)
+            try:
+                if spec["name"]: obj.name=spec["name"]
+                obj.location=loc
+                if rot is not None: obj.rotation_euler=rot
+                obj.data.type=spec["light_type"]
+                obj.data.energy=float(spec["energy"])
+                obj.data.color=rgba
+                if spec["size"] is not None: obj.data.size=float(spec["size"])
+            except Exception:
+                if created: bpy.data.objects.remove(obj,do_unlink=True)
+                else:
+                    obj.name,obj.location,obj.rotation_euler,obj.data.type,obj.data.energy,obj.data.color,old_size=before
+                    if old_size is not None: obj.data.size=old_size
+                raise
+            return ident_now,obj.name
+        return self._bas07_execute("set_light",scene_id,scene_revision,idempotency_key,spec,apply)
 
     def studio_delete_object_v1(self, scene_id, scene_revision, object_id,
                                 snapshot_id, backup_snapshot_id, confirmation_token):
