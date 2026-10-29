@@ -8,6 +8,8 @@ are retained for manual reconciliation; we never silently claim rollback.
 from __future__ import annotations
 
 import ctypes
+import fcntl
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -123,3 +125,16 @@ def atomic_exchange(new_directory: Path, existing_directory: Path):
     finally:
         os.close(left)
         os.close(right)
+
+
+@contextmanager
+def publish_lock(workspace: Path):
+    """Cross-process single writer lock for this private artifact workspace."""
+    lockfile = Path(workspace) / "publish.lock"
+    fd = os.open(lockfile, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
