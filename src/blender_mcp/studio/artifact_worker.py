@@ -423,7 +423,7 @@ class ArtifactWorker:
                     keep_staging = True
             if exchanged and not keep_staging:
                 try:
-                    with self.lock:
+                    with self.lock, publish_lock(self.work):
                         atomic_exchange(stage / "outputs", Path(row["output"]))
                         exchanged = False
                 except Exception:
