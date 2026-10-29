@@ -1565,6 +1565,7 @@
     },
     "SetCamera": {
       "additionalProperties": false,
+      "description": "Create/update a camera, optionally framing scene geometry by world bounds.",
       "properties": {
         "active": {
           "default": true,
