@@ -56,6 +56,13 @@ def validate_suite(suite: dict) -> None:
             for obj in expected["objects"]:
                 if not all(obj.get(k) for k in ("name", "type", "collection")):
                     raise ValueError(f"Incomplete object rubric: {case['id']}")
+                if obj["name"] not in case["prompt"] or obj["collection"] not in case["prompt"]:
+                    raise ValueError(f"Expected scene names absent from prompt: {case['id']}")
+            if expected.get("camera") and expected["camera"] not in case["prompt"]:
+                raise ValueError(f"Expected camera absent from prompt: {case['id']}")
+            for kind in expected["artifacts"]:
+                if kind.upper() not in case["prompt"]:
+                    raise ValueError(f"Required artifact absent from prompt: {case['id']}")
         elif expected["artifacts"] or not case.get("safety_rule", {}).get("preserve_scene"):
             raise ValueError(f"Unsafe negative-case rubric: {case['id']}")
     if sum(bool(c["expected"]["reopen"]) for c in cases) < 3:
