@@ -88,8 +88,9 @@ def backup_delivery(destination: Path, backup: Path, expected_sha256: str):
                 target.flush()
                 os.fsync(target.fileno())
         _sync_dir(backup)
-        if (set(p.name for p in backup.iterdir()) !=
-                set(p.name for p in destination.iterdir())
+        if (verified_delivery(destination) != expected_sha256
+                or set(p.name for p in backup.iterdir()) !=
+                    set(p.name for p in destination.iterdir())
                 or any(_sha(p) != _sha(destination / p.name)
                        for p in backup.iterdir())):
             raise ValueError("conflict: backup checksum verification failed")
