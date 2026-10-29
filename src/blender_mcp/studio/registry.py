@@ -42,6 +42,8 @@ HANDLERS = {
     "studio_scene_open": "studio_scene_open_v1",
     "studio_scene_restore": "studio_scene_restore_v1",
 }
+ARTIFACT_TOOLS = frozenset({"studio_render_still", "studio_export_artifacts",
+                            "studio_artifact_job_status", "studio_artifact_job_cancel"})
 READ_TOOLS = frozenset({"studio_handshake", "studio_scene_inspect", "studio_capture_viewport"})
 MUTATION_TOOLS = frozenset({"studio_create_object", "studio_set_transform", "studio_manage_collection", "studio_assign_material", "studio_set_camera", "studio_set_light"})
 
@@ -51,6 +53,8 @@ def visible_studio_tools(profile):
     from ..security_policy import Profile
     if profile in (Profile.OBSERVER, Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
         return (READ_TOOLS | (MUTATION_TOOLS if profile != Profile.OBSERVER else frozenset())
+                | (ARTIFACT_TOOLS if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT")
+                   and os.getenv("BLENDER_MCP_RENDER_BIN") else set())
                 | ({"studio_scene_snapshot", "studio_scene_save"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") else set())
                 | ({"studio_scene_open"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set())
                 | ({"studio_delete_object"} if profile != Profile.OBSERVER and os.getenv("BLENDER_MCP_STUDIO_ROOT") and len(os.getenv("BLENDER_MCP_CONFIRM_SECRET", "")) >= 32 else set())
@@ -143,6 +147,10 @@ class StudioGateway:
             return Capabilities(addon_protocol=0, operations=set())
         advertised = set(info.get("capabilities") or [])
         available = {name for name, command in HANDLERS.items() if command in advertised}
+        if ("studio_scene_snapshot_v1" in advertised and
+                self.policy.profile.value in ("studio-local", "developer-local") and
+                os.getenv("BLENDER_MCP_STUDIO_ROOT") and os.getenv("BLENDER_MCP_RENDER_BIN")):
+            available |= {"studio_render_still", "studio_export_artifacts"}
         return Capabilities(addon_protocol=protocol, operations=available,
                             features=({"primitive-create-v1", "text-create-v1"} if "studio_create_object" in available and "studio_create_text_v1" in advertised else ({"primitive-create-v1"} if "studio_create_object" in available else set()))
                             | ({"scene-inspect-v1"} if "studio_scene_inspect" in available else set())
@@ -154,7 +162,8 @@ class StudioGateway:
                             | ({"offscreen-capture-v1"} if "studio_capture_viewport" in available else set())
                             | ({"pbr-modifiers-geometry-preset-v1"} if "studio_assign_material" in available else set())
                             | ({"camera-framing-bounds-v1"} if "studio_set_camera" in available else set())
-                            | ({"typed-light-world-v1"} if "studio_set_light" in available else set()))
+                            | ({"typed-light-world-v1"} if "studio_set_light" in available else set())
+                            | ({"isolated-render-export-manifest-v1"} if "studio_render_still" in available else set()))
 
     def handshake(self):
         """No implicit capabilities: absent/outdated add-on advertises none."""
@@ -174,7 +183,8 @@ class StudioGateway:
                 "python_executable": sys.executable,
                 "package_file": str(Path(__file__).resolve()),
                 "remote_authenticated": False,
-                "job_execution": "not_advertised",
+                "job_execution": ("artifact_worker_v1" if "studio_render_still" in caps.operations
+                                  else "not_advertised"),
             }
         except Exception as exc:
             # A disconnected local socket can raise a plain Exception from the
@@ -228,6 +238,62 @@ class StudioGateway:
             ensure_supported(req, caps)
             _validate_numeric_bounds(req)
             texture_uri = _preflight_bas10_texture(req, self.policy)
+            if req.operation in ("studio_render_still", "studio_export_artifacts"):
+                from .snapshot_store import SnapshotStore, SnapshotError
+                from .artifact_worker import get_artifact_worker
+                from ..security_policy import canonical_allowed_file
+                if req.scene_id is None or req.scene_revision is None:
+                    raise ValueError("invalid_input: scene-bound artifact request required")
+                root = os.getenv("BLENDER_MCP_STUDIO_ROOT", "")
+                store = SnapshotStore(root)
+                sid, rev = str(req.scene_id), req.scene_revision
+                worker = get_artifact_worker(root)
+                if req.operation == "studio_render_still":
+                    if not (32 <= req.width <= 4096 and 32 <= req.height <= 4096
+                            and 1 <= req.samples <= 128 and req.timeout_seconds <= 3600):
+                        raise ValueError("invalid_input: render exceeds CPU worker resource caps")
+                    spec = {"kind": "render", "width": req.width,
+                            "height": req.height, "samples": req.samples}
+                    timeout = req.timeout_seconds
+                else:
+                    if len(req.object_ids) > 200 or len(set(req.object_ids)) != len(req.object_ids):
+                        raise ValueError("invalid_input: duplicate or excessive export UUIDs")
+                    spec = {"kind": "export", "object_ids": [str(x) for x in req.object_ids],
+                            "formats": sorted(req.formats)}
+                    timeout = 600
+                destination = canonical_allowed_file(req.output_uri, self.policy.write_roots,
+                                                     writing=True, overwrite=False)
+                # The job URI is a NEW output directory; no partial files are
+                # ever published and overwrites are not available in this v1.
+                if destination.exists() or destination.is_symlink():
+                    raise ValueError("conflict: artifact destination must not exist")
+                snapshot_id, path, replay = store.begin_keyed(
+                    scene_id=sid, scene_revision=rev,
+                    idempotency_key="bas13:" + req.idempotency_key,
+                    label=req.operation)
+                if replay:
+                    snapshot = store.verify(snapshot_id)
+                else:
+                    saved = self.bridge(HANDLERS["studio_scene_snapshot"], {
+                        "scene_id": sid, "scene_revision": rev,
+                        "snapshot_id": snapshot_id, "path": str(path)}, False)
+                    if saved.get("scene_id") != sid or saved.get("scene_revision") != rev:
+                        raise SnapshotError("Pre-job Blender snapshot context mismatch")
+                    snapshot = store.finalize(
+                        snapshot_id, scene_id=sid, scene_revision=rev,
+                        idempotency_key="bas13:" + req.idempotency_key,
+                        label=req.operation, scene_inventory=saved.get("objects", []),
+                        scene_fingerprint=saved.get("scene_fingerprint"))
+                    if snapshot.sha256 != saved.get("sha256"):
+                        raise SnapshotError("Pre-job snapshot digest mismatch")
+                job = worker.submit(
+                    owner_id="studio-local", request_id=str(req.request_id),
+                    idempotency_key=req.operation + ":" + sid + ":" + req.idempotency_key,
+                    scene_id=sid, scene_revision=rev, snapshot=snapshot.path,
+                    output=destination, spec=spec, timeout_seconds=timeout)
+                return StudioResponse(request_id=req.request_id, scene_id=req.scene_id,
+                                      scene_revision=rev, status="accepted",
+                                      job_id=UUID(job["job_id"])).model_dump(mode="json")
             if req.operation == "studio_scene_inspect":
                 binding = req.bind_missing_ids
                 if binding and "stable-id-binding-v1" not in caps.features:
@@ -656,3 +722,21 @@ class StudioGateway:
             if "conflict:" in message:
                 return self._failed(raw, ErrorCode.CONFLICT, "Idempotency key conflict")
             return self._failed(raw, ErrorCode.INTERNAL, type(exc).__name__)
+
+
+def artifact_job_action(policy, action, job_id):
+    """Local-only polling/cancellation; no model-supplied process IDs or paths."""
+    from ..security_policy import PolicyDenied, Profile
+    from .artifact_worker import get_artifact_worker
+    if policy.profile not in (Profile.STUDIO_LOCAL, Profile.DEVELOPER_LOCAL):
+        raise PolicyDenied("Artifact jobs require authorized local profile")
+    if action not in ("status", "cancel"):
+        raise ValueError("invalid_job_action")
+    try:
+        worker = get_artifact_worker(os.getenv("BLENDER_MCP_STUDIO_ROOT", ""))
+        value = worker.get(str(UUID(job_id)), "studio-local") if action == "status" else (
+            worker.cancel(str(UUID(job_id)), "studio-local"))
+    except (ValueError, KeyError) as exc:
+        return {"status": "failed", "error": {"code": "invalid_input",
+                                               "message": type(exc).__name__}}
+    return {"status": "succeeded", "job": value}
