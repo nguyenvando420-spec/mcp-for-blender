@@ -293,8 +293,10 @@ class ArtifactWorker:
                         "input_sha256": [row["snapshot_sha256"]],
                     },
                 })
-            manifest = ArtifactManifest.model_validate({
-                "job_id": job_id, "created_at": _now(), "artifacts": artifact_list})
+            # Strict v1 models accept UUID/UTC timestamp wire strings through
+            # JSON mode, not Python-mode object coercion.
+            manifest = ArtifactManifest.model_validate_json(json.dumps({
+                "job_id": job_id, "created_at": _now(), "artifacts": artifact_list}))
             (outputs / "manifest.json").write_text(
                 manifest.model_dump_json(indent=2), encoding="utf-8")
             (outputs / "run.json").unlink()
