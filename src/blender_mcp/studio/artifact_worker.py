@@ -333,3 +333,30 @@ class ArtifactWorker:
             if proc and proc.poll() is None:
                 proc.terminate()
         return self.get(job_id, owner_id)
+
+# One worker per process/workspace; never reinitialize SQLite per MCP request
+# because doing so would mislabel a live process as interrupted_unknown.
+_WORKERS = {}
+_WORKERS_LOCK = threading.Lock()
+
+
+def get_artifact_worker(root):
+    root = Path(root).resolve(strict=True)
+    binary = os.getenv("BLENDER_MCP_RENDER_BIN")
+    if not binary:
+        raise ValueError("capability_unavailable: configure BLENDER_MCP_RENDER_BIN")
+    repo = Path(__file__).resolve().parents[3]
+    script = repo / "scripts" / "bas13_blender_job.py"
+    source = os.getenv("BLENDER_MCP_SOURCE_COMMIT")
+    if not source:
+        try:
+            source = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL, timeout=3, text=True).strip()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("capability_unavailable: source commit unavailable") from exc
+    key = (str(root), str(Path(binary).resolve()), source)
+    with _WORKERS_LOCK:
+        if key not in _WORKERS:
+            _WORKERS[key] = ArtifactWorker(root, Path(binary), script, source)
+        return _WORKERS[key]
