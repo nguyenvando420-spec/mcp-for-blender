@@ -270,8 +270,10 @@ class ArtifactWorker:
                         header = f.read(12)
                     if header[:4] != b"glTF" or struct.unpack("<I",header[8:])[0] != path.stat().st_size:
                         raise ValueError("invalid_glb")
-                elif path.open("rb").read(7) != b"BLENDER":
-                    raise ValueError("invalid_blend")
+                elif filename.endswith(".blend"):
+                    with path.open("rb") as file:
+                        if file.read(7) != b"BLENDER":
+                            raise ValueError("invalid_blend")
                 blobs.append((filename, path.stat().st_size, _sha(path)))
             if not blobs:
                 raise ValueError("empty_artifact_job")
