@@ -147,12 +147,14 @@ class ArtifactWorker:
             raise ValueError("invalid_job_parameters")
         output = Path(output)
         if (not output.is_absolute() or output == self.root or self.root not in output.parents
-                or output.is_symlink() or output.exists() or not output.parent.is_dir()):
+                or output.is_symlink() or not output.parent.is_dir()):
             raise ValueError("destination_must_be_new_sandbox_directory")
         snapshot = Path(snapshot).resolve(strict=True)
-        if (not snapshot.is_file() or snapshot.stat().st_size > MAX_BLEND
-                or snapshot.stat().st_size < 8 or snapshot.open("rb").read(7) != b"BLENDER"):
+        if not snapshot.is_file() or not 8 <= snapshot.stat().st_size <= MAX_BLEND:
             raise ValueError("invalid_verified_snapshot")
+        with snapshot.open("rb") as fp:
+            if fp.read(7) != b"BLENDER":
+                raise ValueError("invalid_verified_snapshot")
         expected = _sha(snapshot)
         payload = {"scene": scene_id, "revision": scene_revision,
                    "snapshot_sha": expected, "output": str(output),
@@ -166,6 +168,8 @@ class ArtifactWorker:
                 if row["payload_hash"] != digest:
                     raise ValueError("idempotency_conflict")
                 return dict(row)
+            if output.exists() or output.is_symlink():
+                raise ValueError("destination_must_be_new_sandbox_directory")
             job_id = str(uuid4())
             now = _now()
             db.execute("""INSERT INTO jobs(job_id,owner_id,idempotency_key,payload_hash,
