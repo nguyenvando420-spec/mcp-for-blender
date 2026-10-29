@@ -150,21 +150,21 @@ class ArtifactWorker:
                 or self.root not in output.parents
                 or self.root not in output.resolve(strict=False).parents
                 or output.is_symlink() or not output.parent.is_dir()):
-            raise ValueError("destination_must_be_new_sandbox_directory")
+            raise ValueError("conflict: destination_must_be_new_sandbox_directory")
         snapshot_path = Path(snapshot)
         if snapshot_path.is_symlink():
-            raise ValueError("snapshot_symlink_denied")
+            raise ValueError("invalid_input: snapshot_symlink_denied")
         try:
             snapshot = snapshot_path.resolve(strict=True)
         except OSError as exc:
-            raise ValueError("snapshot_path_missing") from exc
+            raise ValueError("invalid_input: snapshot_path_missing") from exc
         if self.root not in snapshot.parents:
-            raise ValueError("snapshot_outside_sandbox")
+            raise ValueError("invalid_input: snapshot_outside_sandbox")
         if not snapshot.is_file() or not 8 <= snapshot.stat().st_size <= MAX_BLEND:
-            raise ValueError("invalid_verified_snapshot")
+            raise ValueError("invalid_input: invalid_verified_snapshot")
         with snapshot.open("rb") as fp:
             if fp.read(7) != b"BLENDER":
-                raise ValueError("invalid_verified_snapshot")
+                raise ValueError("invalid_input: invalid_verified_snapshot")
         expected = _sha(snapshot)
         payload = {"scene": scene_id, "revision": scene_revision,
                    "snapshot_sha": expected, "output": str(output),
@@ -179,7 +179,7 @@ class ArtifactWorker:
                     raise ValueError("idempotency_conflict")
                 return dict(row)
             if output.exists() or output.is_symlink():
-                raise ValueError("destination_must_be_new_sandbox_directory")
+                raise ValueError("conflict: destination_must_be_new_sandbox_directory")
             job_id = str(uuid4())
             now = _now()
             db.execute("""INSERT INTO jobs(job_id,owner_id,idempotency_key,payload_hash,
