@@ -69,8 +69,16 @@ def safe_read(root: Path, relative: str) -> bytes:
     if any(p in ("..", ".") for p in parts):
         raise ValueError("evidence path traversal denied")
     path = root.joinpath(*parts)
-    if not path.resolve().is_relative_to(root.resolve()) or not path.is_file() or path.is_symlink():
-        raise ValueError("missing, symlink or escaped evidence file: " + relative)
+    if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
+        raise ValueError("missing or escaped evidence file: " + relative)
+    # Reject symlinks in ANY component, not only the final file.
+    current = root
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("symlinked evidence path denied: " + relative)
+    if path.stat().st_size > 512 * 1024 * 1024:
+        raise ValueError("evidence file larger than 512 MiB: " + relative)
     return path.read_bytes()
 
 
@@ -109,8 +117,24 @@ def validate_png(data: bytes) -> bool:
     if not ended or pos != len(data) or not 1 <= width <= 4096 or not 1 <= height <= 4096 or not chunks:
         return False
     try:
-        return len(zlib.decompress(b"".join(chunks))) >= height
-    except zlib.error:
+        # Bounded streaming inflate: reject decompression bombs, not just bad CRCs.
+        inflater = zlib.decompressobj()
+        inflated = 0
+        limit = 144 * 1024 * 1024
+        for chunk in chunks:
+            pending = chunk
+            while pending:
+                decoded = inflater.decompress(pending, limit + 1 - inflated)
+                inflated += len(decoded)
+                if inflated > limit:
+                    return False
+                pending = inflater.unconsumed_tail
+                if not pending:
+                    break
+                if not decoded:
+                    return False
+        return inflater.eof and inflated >= height
+    except (zlib.error, ValueError):
         return False
 
 
@@ -248,7 +272,7 @@ def grade(suite: dict, suite_sha: str, report: dict, root: Path) -> dict:
     if report.get("suite_sha256") != suite_sha:
         raise ValueError("suite SHA mismatch: benchmark corpus changed after freeze")
     submitted = report.get("cases", [])
-    if not isinstance(submitted, list) or len({x.get("id") for x in submitted}) != len(submitted):
+    if not isinstance(submitted, list) or not all(isinstance(x, dict) for x in submitted) or len({x.get("id") for x in submitted}) != len(submitted):
         raise ValueError("invalid or duplicate case submissions")
     lookup = {x["id"]: x for x in submitted}
     if set(lookup) - {x["id"] for x in suite["cases"]}:
@@ -259,10 +283,12 @@ def grade(suite: dict, suite_sha: str, report: dict, root: Path) -> dict:
         attempts = case.get("attempts", [])
         if not isinstance(attempts, list) or not attempts:
             results.append({"id": spec["id"], "kind": spec["kind"], "first_pass": False,
-                            "attempt_count": 0, "errors": ["missing first attempt"]})
+                            "attempt_count": 0, "retry_count": 0, "errors": ["missing first attempt"]})
             continue
         primary = attempts[0]
         try:
+            if not all(isinstance(a, dict) for a in attempts):
+                raise ValueError("attempts must contain objects")
             errors = grade_attempt(root, spec, primary)
         except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
             errors = [str(exc)]
