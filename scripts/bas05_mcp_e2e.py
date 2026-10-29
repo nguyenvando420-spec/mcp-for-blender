@@ -891,6 +891,57 @@ async def accept(port, record):
                                      "artifact_count":len(evidence13["artifacts"]),
                                      "manifest_sha256":hashlib.sha256(manifest13.read_bytes()).hexdigest(),
                                      "idempotent_replay": True, "overwrite_denied": True})
+            # Trusted test harness acts as the reviewing UI. The MCP model
+            # never gets a token-issuance API. Bind consent to destination,
+            # complete pre-write manifest, scene ID and revision.
+            from blender_mcp.security_policy import issue_resource_confirmation
+            replacement_dest = delivery / "bas13-gui-render"
+            original_manifest = replacement_dest / "manifest.json"
+            old_manifest_digest = hashlib.sha256(original_manifest.read_bytes()).hexdigest()
+            secret13 = os.environ["BLENDER_MCP_CONFIRM_SECRET"].encode()
+            confirm13 = issue_resource_confirmation(
+                secret13, operation="studio_render_still", scene_id=newid,
+                scene_revision=basrev,
+                resource=replacement_dest.as_uri() + "|" + old_manifest_digest)
+            confirmed13 = {
+                "operation": "studio_render_still", "effect_scope": "file",
+                "request_id": str(uuid4()), "scene_id": newid,
+                "scene_revision": basrev, "idempotency_key": "bas13-gui-confirmed",
+                "output_uri": replacement_dest.as_uri(), "width": 128,
+                "height": 128, "samples": 4, "timeout_seconds": 120,
+                "overwrite": True, "expected_sha256": old_manifest_digest,
+                "confirmation_token": confirm13}
+            # The signed proof may NOT be redirected to a different output.
+            tampered13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4()),
+                            "expected_sha256": "0"*64}}))
+            assert tampered13["status"] == "failed", tampered13
+            assert tampered13["error"]["code"] == "permission_denied", tampered13
+            issued13 = unpack(await client.call_tool("studio_render_still", {
+                "request": confirmed13}))
+            assert issued13["status"] == "accepted", issued13
+            result13 = await bas13_wait(issued13["job_id"])
+            assert result13["state"] == "succeeded", result13
+            assert Path(result13["backup"]).is_dir(), result13
+            assert hashlib.sha256((Path(result13["backup"]) / "manifest.json").read_bytes()).hexdigest() == old_manifest_digest
+            assert hashlib.sha256(original_manifest.read_bytes()).hexdigest() != old_manifest_digest
+            replay13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4())}}))
+            assert replay13["status"] == "accepted"
+            assert replay13["job_id"] == issued13["job_id"]
+            # A consumed consent token must fail on a different job key.
+            consumed13 = unpack(await client.call_tool("studio_render_still", {
+                "request": {**confirmed13, "request_id": str(uuid4()),
+                            "idempotency_key": "bas13-gui-consumed",
+                            "expected_sha256": hashlib.sha256(original_manifest.read_bytes()).hexdigest()}}))
+            assert consumed13["status"] == "failed", consumed13
+            record["bas13_confirmed_overwrite"] = {
+                "job_id": issued13["job_id"],
+                "old_manifest_sha256": old_manifest_digest,
+                "new_manifest_sha256": hashlib.sha256(original_manifest.read_bytes()).hexdigest(),
+                "backup": result13["backup"], "confirmed": True,
+                "tamper_denied": True, "replay_safe": True,
+                "used_token_denied": True}
             after_artifacts13 = unpack(await client.call_tool(
                 "studio_scene_inspect", {"request": {
                     "operation": "studio_scene_inspect", "request_id": str(uuid4()),
