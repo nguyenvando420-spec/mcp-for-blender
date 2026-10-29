@@ -745,6 +745,15 @@ async def accept(port, record):
                 assert light11["result"]["objects"][0]["kind"] == "light"
                 assert light11["result"]["scene_diff"]["created"] == [lamp_id]
                 bas11_ids["lights"].append(lamp_id)
+            _, updated_light11 = await bas11_call(
+                "studio_set_light", "bas11-gui-area-update",
+                spec={"kind": "light", "light_id": bas11_ids["lights"][0],
+                      "name": "BAS11_GUI_AREA", "light_type": "AREA", "energy": 450,
+                      "color": [1, .85, .7], "location": [1, -4, 7],
+                      "size": 2})
+            assert updated_light11["result"]["scene_diff"]["updated"] == [
+                bas11_ids["lights"][0]]
+            assert updated_light11["result"]["objects"][0]["id"] == bas11_ids["lights"][0]
             _, world11 = await bas11_call("studio_set_light", "bas11-gui-world",
                                         spec={"kind": "world", "color": [.1, .2, .35],
                                               "strength": .8})
@@ -994,6 +1003,22 @@ def main():
         assert verify_ids.returncode == 0, verify_ids.stderr[-1000:]
         assert "BAS08_IDS_REOPEN_PASS" in verify_ids.stdout
         record["bas08_binding"]["headless_reopen_passed"] = True
+        # Independent process verifies the BLEND written by the actual Xvfb
+        # GUI includes every BAS-11 UUID, active camera and node world state.
+        bas11_gui = record["bas11_gui"]
+        gui_reopen = subprocess.run([
+            str(blender), "--background", "--factory-startup", "--disable-autoexec",
+            "--python-exit-code", "1", "--python",
+            str(ROOT / "scripts" / "bas11_gui_reopen.py"), "--",
+            str(blend), bas11_gui["active_camera"],
+            *bas11_gui["camera_ids"], *bas11_gui["light_ids"],
+        ], cwd=ROOT, capture_output=True, text=True, timeout=90)
+        (output / "bas11-gui-reopen.log").write_text(
+            gui_reopen.stdout + gui_reopen.stderr)
+        assert gui_reopen.returncode == 0, gui_reopen.stderr[-1000:]
+        assert "BAS11_GUI_REOPEN_PASS" in gui_reopen.stdout
+        record["bas11_gui"]["independent_reopen_passed"] = True
+
         heartbeat = json.loads((output / "bas06-heartbeat.json").read_text())
         assert heartbeat["count"] >= 10, heartbeat
         assert heartbeat["max_gap_seconds"] < 2.0, heartbeat
