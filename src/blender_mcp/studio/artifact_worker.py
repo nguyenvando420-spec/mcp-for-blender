@@ -43,7 +43,7 @@ def _validate_render(path, width, height):
         raise ValueError("invalid_render_png_size")
     with path.open("rb") as f:
         head = f.read(24)
-    if head[:16] != b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR":
+    if head[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR":
         raise ValueError("invalid_render_png_header")
     if struct.unpack(">II", head[16:24]) != (width, height):
         raise ValueError("invalid_render_png_dimensions")
