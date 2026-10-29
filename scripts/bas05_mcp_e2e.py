@@ -925,6 +925,12 @@ async def accept(port, record):
             assert Path(result13["backup"]).is_dir(), result13
             assert hashlib.sha256((Path(result13["backup"]) / "manifest.json").read_bytes()).hexdigest() == old_manifest_digest
             assert hashlib.sha256(original_manifest.read_bytes()).hexdigest() != old_manifest_digest
+            # Keep the prior delivery in the uploaded CI evidence, not only
+            # the hidden private worker backup directory.
+            import shutil
+            backup_evidence13 = delivery.parent / "bas13-confirmed-backup"
+            shutil.copytree(Path(result13["backup"]), backup_evidence13)
+            assert hashlib.sha256((backup_evidence13 / "manifest.json").read_bytes()).hexdigest() == old_manifest_digest
             replay13 = unpack(await client.call_tool("studio_render_still", {
                 "request": {**confirmed13, "request_id": str(uuid4())}}))
             assert replay13["status"] == "accepted"
