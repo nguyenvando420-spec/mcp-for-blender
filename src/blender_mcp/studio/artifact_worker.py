@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from .contracts import ArtifactManifest
-from .artifact_publish import verified_delivery, backup_delivery, atomic_exchange, _sync_dir
+from .artifact_publish import (verified_delivery, backup_delivery,
+                               atomic_exchange, _sync_dir, publish_lock)
 
 MAX_BLEND = 512 * 1024 * 1024
 MAX_FILE = 512 * 1024 * 1024
@@ -356,7 +357,7 @@ class ArtifactWorker:
             destination = Path(row["output"])
             # Publish a complete directory, never files independently. A
             # confirmed overwrite uses an fsynced backup and Linux atomic swap.
-            with self.lock:
+            with self.lock, publish_lock(self.work):
                 with self._connect() as db:
                     if self._get(db, job_id)["cancel_requested"]:
                         db.execute("UPDATE jobs SET state='cancelled',stop_confirmed=1,updated_at=? WHERE job_id=?",
