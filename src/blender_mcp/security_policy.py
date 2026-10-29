@@ -354,7 +354,12 @@ def authorize_studio_request(data: dict, policy: Policy, *,
             canonical_allowed_file(
                 uri, policy.write_roots if is_output else policy.read_roots,
                 writing=is_output,
-                overwrite=bool(getattr(request, "overwrite", False)),
+                # Artifact jobs may replay an existing idempotency key. The
+                # worker checks the durable payload digest before allowing
+                # replay; it still rejects overwriting any destination.
+                overwrite=(bool(getattr(request, "overwrite", False))
+                           or request.operation in ("studio_render_still",
+                                                    "studio_export_artifacts")),
             )
     spec = getattr(request, "spec", None)
     texture_uri = getattr(spec, "texture_uri", None)
