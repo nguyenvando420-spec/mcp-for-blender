@@ -94,6 +94,8 @@ jobs:
           .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas10_blender_golden.py -- --output-dir "${{ runner.temp }}/bas10-golden"
       - name: BAS-10 independently validate BLEND/PNG evidence and checksums
         run: uv run --frozen --python 3.12.14 python scripts/bas10_verify_evidence.py --output-dir "${{ runner.temp }}/bas10-golden"
+      - name: BAS-14 curved normals and extruded PBR text regression
+        run: .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas14_quality_golden.py -- "${{ runner.temp }}/bas14-quality"
       - name: BAS-11 pinned camera/light/world golden and independent reopen
         run: |
           .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas11_blender_golden.py -- --output-dir "${{ runner.temp }}/bas11-golden"
@@ -122,5 +124,6 @@ jobs:
             ${{ runner.temp }}/bas10-golden
             ${{ runner.temp }}/bas11-golden
             ${{ runner.temp }}/bas13-evidence
+            ${{ runner.temp }}/bas14-quality
           retention-days: 30
           if-no-files-found: warn

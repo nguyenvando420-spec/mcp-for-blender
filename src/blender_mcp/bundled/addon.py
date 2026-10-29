@@ -2220,6 +2220,11 @@ class BlenderMCPServer:
         builders[primitive](location=tuple(float(v) for v in location))
         obj = bpy.context.object
         obj.name = name
+        # Curved primitives need interpolated side normals. Keep planar caps
+        # and box faces flat; smoothing a cap creates visible shading spikes.
+        if primitive in ("sphere", "cylinder", "cone"):
+            for polygon in obj.data.polygons:
+                polygon.use_smooth = primitive == "sphere" or len(polygon.vertices) <= 4
         obj_id = str(uuid.uuid4())
         obj["_bas05_object_id"] = obj_id
         revision += 1
@@ -2821,6 +2826,9 @@ class BlenderMCPServer:
             curve = bpy.data.curves.new(name=name + "_Font", type="FONT")
             try:
                 curve.body = text
+                curve.extrude = 0.075
+                curve.bevel_depth = 0.008
+                curve.bevel_resolution = 3
                 obj = bpy.data.objects.new(name, curve)
                 scene.collection.objects.link(obj)
             except Exception:
@@ -3030,8 +3038,9 @@ class BlenderMCPServer:
                 raise ValueError("permission_denied: linked/empty object")
             if any(other != scene for other in getattr(obj, "users_scene", [])):
                 raise ValueError("permission_denied: object is shared by multiple scenes")
-            if obj.type != "MESH":
-                raise ValueError("invalid_input: geometry operation requires MESH")
+            allowed_types = ("MESH", "FONT") if kind == "pbr" else ("MESH",)
+            if obj.type not in allowed_types:
+                raise ValueError("invalid_input: unsupported object for material/geometry operation")
             if kind == "pbr":
                 # Never change other objects through a shared mesh datablock.
                 if obj.data.users > 1:
