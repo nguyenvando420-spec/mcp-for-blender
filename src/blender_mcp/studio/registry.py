@@ -263,8 +263,8 @@ class StudioGateway:
                     timeout = 600
                 destination = canonical_allowed_file(req.output_uri, self.policy.write_roots,
                                                      writing=True, overwrite=True)
-                # The job URI is a NEW output directory; no partial files are
-                # ever published and overwrites are not available in this v1.
+                # Overwrite requires BAS-12-compatible resource-bound confirmation
+                # and exact manifest digest; publish stays atomic and backed up.
                 if destination.is_symlink():
                     raise ValueError("conflict: artifact destination symlink denied")
                 snapshot_id, path, replay = store.begin_keyed(
@@ -290,7 +290,9 @@ class StudioGateway:
                     owner_id="studio-local", request_id=str(req.request_id),
                     idempotency_key=req.operation + ":" + sid + ":" + req.idempotency_key,
                     scene_id=sid, scene_revision=rev, snapshot=snapshot.path,
-                    output=destination, spec=spec, timeout_seconds=timeout)
+                    output=destination, spec=spec, timeout_seconds=timeout,
+                    overwrite=req.overwrite, expected_sha256=req.expected_sha256,
+                    confirmation_token=req.confirmation_token)
                 return StudioResponse(request_id=req.request_id, scene_id=req.scene_id,
                                       scene_revision=rev, status="accepted",
                                       job_id=UUID(job["job_id"])).model_dump(mode="json")
