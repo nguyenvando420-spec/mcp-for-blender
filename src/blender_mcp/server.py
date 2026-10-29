@@ -2424,6 +2424,34 @@ def studio_set_light(request: dict) -> dict:
 
 
 @mcp.tool()
+def studio_render_still(request: dict) -> dict:
+    """Queue a bounded CPU still from a verified scene snapshot; output URI is a fresh directory."""
+    return _studio_gateway().invoke(request, "studio_render_still")
+
+
+@mcp.tool()
+def studio_export_artifacts(request: dict) -> dict:
+    """Queue GLB/BLEND exports in a headless process with checksum manifest."""
+    return _studio_gateway().invoke(request, "studio_export_artifacts")
+
+
+@mcp.tool()
+def studio_artifact_job_status(job_id: str) -> dict:
+    """Poll local persistent render/export job state and validated manifest path."""
+    from .studio.registry import artifact_job_action
+    from .security_policy import Policy
+    return artifact_job_action(Policy(profile_from_env()), "status", job_id)
+
+
+@mcp.tool()
+def studio_artifact_job_cancel(job_id: str) -> dict:
+    """Request termination of an isolated render/export process; never claim early cancellation."""
+    from .studio.registry import artifact_job_action
+    from .security_policy import Policy
+    return artifact_job_action(Policy(profile_from_env()), "cancel", job_id)
+
+
+@mcp.tool()
 def studio_delete_object(request: dict) -> dict:
     """Delete only with bound confirmation and verified pre-delete snapshots."""
     return _studio_gateway().invoke(request, "studio_delete_object")
