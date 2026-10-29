@@ -137,5 +137,9 @@ def test_staging_uses_verified_blend_and_rejects_symlink(runtime):
     alias = worker.root / "alias.blend"
     alias.symlink_to(outside)
     # The service only accepts an already verified copy inside the sandbox.
+    with pytest.raises(ValueError, match="snapshot_symlink_denied"):
+        submit(worker, alias, name="symlink", key="symlink")
+    with pytest.raises(ValueError):
+        submit(worker, outside, name="external-snapshot", key="outside")
     with pytest.raises(ValueError):
         submit(worker, worker.root / "missing.blend", name="missing", key="missing")
