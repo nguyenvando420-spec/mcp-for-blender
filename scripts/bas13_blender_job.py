@@ -62,7 +62,7 @@ elif kind == "export":
     if "blend" in allowed:
         # Use full scene copy, not a filtered GLB selection. Canonical BLEND
         # output preserves active camera, materials, world and all scene IDs.
-        bpy.ops.wm.save_as_mainfile(filepath=str(output / "scene.blend"), copy=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(output / "scene.blend"), copy=True, compress=False)
         files.append("scene.blend")
     info = {"objects_requested": uuids, "formats": sorted(allowed)}
 else:

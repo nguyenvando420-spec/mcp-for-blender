@@ -100,6 +100,19 @@ def _bas12_golden_gui_probe_timer():
             bsdf.inputs["Metallic"].default_value = 0.87
             bsdf.inputs["Roughness"].default_value = 0.95
             bpy.context.view_layer.update()
+        elif command.get("action") == "arm_restore_failure":
+            # Trusted disposable test harness only, not an MCP operation.
+            # Fail after the imported scene names have been assigned, before
+            # commit, to exercise the real rollback of every renamed ID.
+            fingerprint = server._bas07_scene_fingerprint
+
+            def fail_before_commit(candidate):
+                if candidate != bpy.context.window.scene:
+                    server._bas07_scene_fingerprint = fingerprint
+                    raise RuntimeError("BAS14 injected restore transaction failure")
+                return fingerprint(candidate)
+
+            server._bas07_scene_fingerprint = fail_before_commit
         elif command.get("action") != "inspect":
             raise ValueError("Unknown BAS-12 golden GUI test action")
         state = _bas12_golden_probe()

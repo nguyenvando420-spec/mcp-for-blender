@@ -12,6 +12,36 @@ from blender_mcp.studio.snapshot_store import SnapshotStore
 SECRET = b"z" * 48
 
 
+def test_addon_snapshot_ignores_user_compression_preference(tmp_path, monkeypatch):
+    """A compressed-save preference must not break the snapshot wire format."""
+    from types import SimpleNamespace
+    import uuid
+    from test_server_threading import BlenderMCPServer
+
+    server = object.__new__(BlenderMCPServer)
+    sid, snapshot_id = str(uuid4()), str(uuid4())
+    scene = SimpleNamespace(objects=[])
+    path = tmp_path / "snapshot.blend"
+    server._studio_scene_context_v1 = lambda: (scene, sid, 2)
+    server._bas12_snapshot_path = lambda *_: path
+    server._bas07_scene_fingerprint = lambda _: "f" * 64
+
+    def save_as_mainfile(*, filepath, copy, compress=True):
+        assert copy is True
+        # Emulate Blender saving compressed data unless explicitly disabled.
+        Path(filepath).write_bytes(b"compressed-default" if compress else b"BLENDER-v450-payload")
+        return {"FINISHED"}
+
+    fake_bpy = SimpleNamespace(ops=SimpleNamespace(wm=SimpleNamespace(
+        save_as_mainfile=save_as_mainfile)))
+    monkeypatch.setitem(BlenderMCPServer.studio_scene_snapshot_v1.__globals__, "bpy", fake_bpy)
+    monkeypatch.setitem(BlenderMCPServer.studio_scene_snapshot_v1.__globals__, "uuid", uuid)
+    result = server.studio_scene_snapshot_v1(sid, 2, snapshot_id, str(path))
+    assert result["snapshot_id"] == snapshot_id
+    assert result["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert result["bytes"] == path.stat().st_size
+
+
 class Bridge:
     def __init__(self, scene_id):
         self.sid = scene_id

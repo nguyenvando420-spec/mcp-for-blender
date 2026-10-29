@@ -179,8 +179,14 @@ def check_scene(expected: dict, observed: dict) -> list[str]:
         match = [x for x in objects if x.get("name") == item["name"] and x.get("type") == item["type"]]
         if not match:
             failures.append("missing object " + item["name"])
-        elif item["collection"] not in match[0].get("collections", []):
-            failures.append("wrong collection " + item["name"])
+        else:
+            # BAS-08 inspection returns {name, collection_id} records. Retain
+            # support for name-only evidence from older decoded summaries.
+            collections = match[0].get("collections", [])
+            names = [entry.get("name") if isinstance(entry, dict) else entry
+                     for entry in collections] if isinstance(collections, list) else []
+            if item["collection"] not in names:
+                failures.append("wrong collection " + item["name"])
     camera = expected.get("camera")
     if camera:
         cams = [x for x in objects if x.get("name") == camera and x.get("type") == "CAMERA"]

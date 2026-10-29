@@ -97,6 +97,28 @@ def test_reject_nested_symlink(tmp_path):
         m.safe_read(tmp_path, "shortcut/session.log")
 
 
+def test_raw_mcp_collection_records_are_scored(tmp_path):
+    # Shape emitted by real BAS-08 studio_scene_inspect, including unbound IDs.
+    observed = {"objects": [{"name": "Cube", "type": "MESH", "collections": [
+        {"name": "Collection", "collection_id": None}]}], "has_more": False}
+    (tmp_path / "scene.json").write_text(json.dumps({"status": "succeeded",
+        "result": {"summary": json.dumps(observed)}}), encoding="utf-8")
+    expected = {"objects": [{"name": "Cube", "type": "MESH",
+                              "collection": "Collection"}], "camera": None}
+    assert m.check_scene(expected, m.scene_from_mcp(tmp_path, "scene.json")) == []
+    observed["objects"][0]["collections"][0]["name"] = "Wrong"
+    assert m.check_scene(expected, observed) == ["wrong collection Cube"]
+
+
+@pytest.mark.parametrize("collections", [[], None, "Collection", [{}], [None]])
+def test_missing_collection_records_cannot_pass(collections):
+    expected = {"objects": [{"name": "Cube", "type": "MESH",
+                              "collection": "Collection"}], "camera": None}
+    observed = {"objects": [{"name": "Cube", "type": "MESH",
+                             "collections": collections}]}
+    assert m.check_scene(expected, observed) == ["wrong collection Cube"]
+
+
 def test_reject_oversized_evidence_without_reading(tmp_path):
     path = tmp_path / "untrusted.blend"
     with path.open("wb") as handle:
