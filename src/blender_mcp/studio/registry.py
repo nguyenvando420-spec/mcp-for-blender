@@ -265,8 +265,8 @@ class StudioGateway:
                                                      writing=True, overwrite=False)
                 # The job URI is a NEW output directory; no partial files are
                 # ever published and overwrites are not available in this v1.
-                if destination.exists() or destination.is_symlink():
-                    raise ValueError("conflict: artifact destination must not exist")
+                if destination.is_symlink():
+                    raise ValueError("conflict: artifact destination symlink denied")
                 snapshot_id, path, replay = store.begin_keyed(
                     scene_id=sid, scene_revision=rev,
                     idempotency_key="bas13:" + req.idempotency_key,
