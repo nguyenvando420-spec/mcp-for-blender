@@ -377,6 +377,8 @@ class ArtifactWorker:
                         "new_sha256": _sha(outputs / "manifest.json"),
                         "state": "prepared",
                     }), encoding="utf-8")
+                    with journal.open("rb") as journal_fd:
+                        os.fsync(journal_fd.fileno())
                     _sync_dir(stage)
                     exchange_attempted = True
                     atomic_exchange(outputs, destination)
