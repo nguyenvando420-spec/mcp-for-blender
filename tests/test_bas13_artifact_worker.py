@@ -143,3 +143,137 @@ def test_staging_uses_verified_blend_and_rejects_symlink(runtime):
         submit(worker, outside, name="external-snapshot", key="outside")
     with pytest.raises(ValueError):
         submit(worker, worker.root / "missing.blend", name="missing", key="missing")
+
+
+def _overwrite(worker, snap, key, expected, token, **kwargs):
+    return submit(worker, snap, name="output", key=key, overwrite=True,
+                  expected_sha256=expected, confirmation_token=token, **kwargs)
+
+
+def test_confirmed_overwrite_atomic_backup_and_token_consumption(runtime):
+    from blender_mcp.studio.artifact_publish import verified_delivery, _sha
+    from blender_mcp.security_policy import (
+        Policy, Profile, issue_resource_confirmation, authorize_studio_request,
+    )
+    from uuid import uuid4
+
+    worker, snap = runtime
+    first = submit(worker, snap)
+    assert wait_for(worker, first)["state"] == "succeeded"
+    destination = worker.root / "output"
+    before = verified_delivery(destination)
+    previous = _sha(destination / "still.png")
+    scene = "00000000-0000-4000-8000-000000000001"
+    secret = b"b" * 40
+    op = "studio_render_still"
+    token = issue_resource_confirmation(
+        secret, operation=op, scene_id=scene, scene_revision=3,
+        resource=destination.as_uri() + "|" + before)
+    raw = {"operation": op, "effect_scope": "file", "request_id": str(uuid4()),
+           "scene_id": scene, "scene_revision": 3, "idempotency_key": "renew",
+           "output_uri": destination.as_uri(), "width": 32, "height": 32,
+           "samples": 2, "timeout_seconds": 6, "overwrite": True,
+           "expected_sha256": before, "confirmation_token": token}
+    policy = Policy(Profile.STUDIO_LOCAL,write_roots=(worker.root,))
+    assert authorize_studio_request(raw, policy, confirmation_secret=secret).overwrite
+
+    replaced = _overwrite(worker, snap, "renew", before, token,
+                          spec={"kind": "render", "width": 32, "height": 32,
+                                "samples": 2})
+    terminal = wait_for(worker, replaced)
+    assert terminal["state"] == "succeeded", terminal
+    assert terminal["backup"] and Path(terminal["backup"]).is_dir()
+    assert _sha(Path(terminal["backup"]) / "still.png") == previous
+    assert (Path(terminal["backup"]) / "manifest.json").read_bytes() != (
+        destination / "manifest.json").read_bytes()
+    assert verified_delivery(destination) != before
+    assert _overwrite(worker, snap, "renew", before, token,
+                      spec={"kind": "render", "width": 32, "height": 32,
+                            "samples": 2})["job_id"] == replaced["job_id"]
+    with pytest.raises(ValueError,match="consumed"):
+        _overwrite(worker, snap, "other-confirmation", verified_delivery(destination),
+                   token)
+    with pytest.raises(ValueError,match="checksum"):
+        _overwrite(worker, snap, "stale-confirmation", before, "different-token")
+
+
+def test_tampered_confirmation_or_scene_denied(runtime):
+    from blender_mcp.security_policy import (
+        Policy, Profile, PolicyDenied,
+        issue_resource_confirmation, authorize_studio_request,
+    )
+    from blender_mcp.studio.artifact_publish import verified_delivery
+    from uuid import uuid4
+
+    worker, snap = runtime
+    first = submit(worker, snap)
+    assert wait_for(worker, first)["state"] == "succeeded"
+    dest = worker.root / "output"
+    sha = verified_delivery(dest)
+    scene = "00000000-0000-4000-8000-000000000001"
+    secret = b"x" * 40
+    token = issue_resource_confirmation(secret, operation="studio_export_artifacts",
+        scene_id=scene, scene_revision=3,
+        resource=dest.as_uri() + "|" + sha)
+    raw = {"operation": "studio_export_artifacts", "effect_scope": "file",
+           "request_id": str(uuid4()), "scene_id": scene, "scene_revision": 3,
+           "idempotency_key": "signed", "output_uri": dest.as_uri(),
+           "formats": ["glb"], "object_ids": [str(uuid4())],
+           "overwrite": True, "expected_sha256": sha, "confirmation_token": token}
+    policy = Policy(Profile.STUDIO_LOCAL,write_roots=(worker.root,))
+    assert authorize_studio_request(raw, policy, confirmation_secret=secret).overwrite
+    for altered in [
+            {"scene_revision": 4}, {"expected_sha256": "0" * 64},
+            {"confirmation_token": token[:-2] + "aa"},
+            {"output_uri": (worker.root / "different-output").as_uri()},
+            {"operation": "studio_render_still"}]:
+        with pytest.raises((PolicyDenied, ValueError)):
+            authorize_studio_request({**raw,**altered}, policy,
+                                     confirmation_secret=secret)
+    assert verified_delivery(dest) == sha
+
+
+def test_overwrite_cancel_and_destination_change_fail_closed(runtime):
+    from blender_mcp.studio.artifact_publish import verified_delivery
+    worker, snap = runtime
+    base = submit(worker, snap)
+    assert wait_for(worker, base)["state"] == "succeeded"
+    dest = worker.root / "output"
+    before = verified_delivery(dest)
+    snap.write_bytes(b"BLENDER-SLOW")
+    row = _overwrite(worker, snap, "cancel-replacement", before, "authorized-test-token",
+                     timeout_seconds=6)
+    worker.cancel(row["job_id"], "owner")
+    result = wait_for(worker,row)
+    assert result["state"] == "cancelled" or result["state"] == "failed",result
+    assert verified_delivery(dest) == before
+    assert not result["manifest"]
+    # A stale expected digest may not start another job or consume a token.
+    with pytest.raises(ValueError, match="checksum"):
+        _overwrite(worker,snap,"wrong-sha","f"*64,"distinct-token")
+
+
+def test_worker_restart_marks_uncertain_overwrite_without_auto_replay(runtime):
+    from blender_mcp.studio.artifact_publish import verified_delivery
+    worker,snap = runtime
+    first = submit(worker,snap)
+    assert wait_for(worker,first)["state"] == "succeeded"
+    before = verified_delivery(worker.root/"output")
+    with worker._connect() as db:
+        db.execute("""INSERT INTO jobs(job_id,owner_id,idempotency_key,payload_hash,
+            request_id,scene_id,scene_revision,spec,snapshot,snapshot_sha256,
+            output,timeout_seconds,state,created_at,updated_at,
+            overwrite,expected_sha256,confirmation_hash)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'running',?,?,1,?,?)""",
+            ("11111111-1111-4111-8111-111111111111","owner","restart","digest",
+             "request","00000000-0000-4000-8000-000000000001",3,"{}",
+             str(snap),"a"*64,str(worker.root/"output"),120,"now","now",
+             before,"consumed-token"))
+        db.execute("""INSERT INTO confirmed_tokens(token_hash,job_id)
+                      VALUES(?,?)""",("consumed-token",
+                         "11111111-1111-4111-8111-111111111111"))
+    resumed = ArtifactWorker(worker.root,worker.blender,worker.script,"a"*40)
+    record = resumed.get("11111111-1111-4111-8111-111111111111","owner")
+    assert record["state"] == "interrupted_unknown"
+    assert resumed.cancel(record["job_id"],"owner")["state"] == "interrupted_unknown"
+    assert verified_delivery(worker.root/"output") == before
