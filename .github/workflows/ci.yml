@@ -90,6 +90,11 @@ jobs:
           .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas10_blender_golden.py -- --output-dir "${{ runner.temp }}/bas10-golden"
       - name: BAS-10 independently validate BLEND/PNG evidence and checksums
         run: uv run --frozen --python 3.12.14 python scripts/bas10_verify_evidence.py --output-dir "${{ runner.temp }}/bas10-golden"
+      - name: BAS-11 pinned camera/light/world golden and independent reopen
+        run: |
+          .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas11_blender_golden.py -- --output-dir "${{ runner.temp }}/bas11-golden"
+          .blender-runtime/runtime/blender-4.5.15-linux-x64/blender --background --factory-startup --disable-autoexec --python-exit-code 1 --python scripts/bas11_blender_golden.py -- --output-dir "${{ runner.temp }}/bas11-golden" --reopen
+          test -s "${{ runner.temp }}/bas11-golden/bas11-reopen.json"
       - name: BAS-05/BAS-06 MCP GUI E2E + 100-command stress (Xvfb)
         run: uv run --frozen --python 3.12.14 python scripts/bas05_mcp_e2e.py --output-dir "${{ runner.temp }}/bas05-mcp-gui"
       - name: BAS-06 real independent Blender render worker + durable SQLite recovery
@@ -108,5 +113,6 @@ jobs:
             ${{ runner.temp }}/bas05-mcp-gui
             ${{ runner.temp }}/bas06-worker
             ${{ runner.temp }}/bas10-golden
+            ${{ runner.temp }}/bas11-golden
           retention-days: 30
           if-no-files-found: warn
