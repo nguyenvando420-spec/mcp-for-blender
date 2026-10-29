@@ -35,7 +35,9 @@ A successful new output directory contains `still.png` for still renders or `sce
 - Render: width/height 32–4096, Cycles samples 1–128, timeout <= 3600 seconds; no raw Blender CLI injection.
 - Export: 1–200 distinct UUIDs, only GLB/BLEND formats and recognized mesh/curve/text geometries.
 - Scene snapshot: immutable BAS-12 verification + 512 MiB upper bound; artifact output cap 512 MiB.
-- All destination paths must be fresh and inside the private sandbox; existing destinations and symlinks fail closed. **Overwrites are not implemented**, even with a caller token. A distinct resource-bound confirmation and verified backup/rollback protocol are required before this acceptance item can pass.
+- New jobs publish into fresh directories. A deliberate `overwrite=true` request must include `expected_sha256` (SHA-256 of the existing `manifest.json`) and a short-lived `confirmation_token` issued by a **trusted UI/backend** after inspecting the exact resource. The HMAC binds the operation, scene UUID/revision and output URI/digest, and the token is consumed once in persistent SQLite. MCP does not expose token issuance.
+- The worker validates all previous files against the manifest, copies a verified fsynced backup under `.bas13-worker/backups/<job-id>`, then calls **Linux renameat2(RENAME_EXCHANGE)** to atomically exchange complete directories. If a post-exchange failure occurs, the worker attempts the reverse atomic exchange. On a crash or ambiguous rollback it preserves the stage journal/backup and marks `interrupted_unknown` (manual reconciliation, never automatic retry). Existing output without valid consent remains denied.
+- This safe overwrite mode currently targets Linux/POSIX local single-writer sandbox only. It is not supported on other OSes when atomic exchange is unavailable.
 - Status is durable in a private SQLite table; logs are stored under `.bas13-worker/logs/`. Failed jobs retain logs and do not publish a delivery directory.
 
 ## Verification
@@ -44,6 +46,6 @@ A successful new output directory contains `still.png` for still renders or `sce
 
 Run CI on the final PR head and inspect the downloadable `bas13-evidence` directory and `bas05-mcp-gui` E2E JSON. Do not claim release acceptance based on a unit-test-only run or the background golden alone.
 
-## Open gates before Done
+## Release acceptance gates
 
-Confirmed safe overwrite is not implemented. Independent GUI job tests and artifacts on the final head need green CI and review. Browser/web remote export, GPU render and fully packaged-wheel worker path are explicitly outside this initial local P2 scope.
+Confirm resource-bound signing and checksum/tamper rejection, one-shot token persistence, backup integrity, atomic exchange, cancel, changed-destination conflict, crash journal retention and rollback on the **final HEAD** CI run. Independently inspect downloadable GUI/GLB/BLEND/PNG/manifest/log artifacts and independent Blender reopen. Review the security boundary and record human mouse-driven desktop UAT as tested or as a scoped exception. Merge only after all mandatory CI checks pass; re-run post-merge Python checks before setting Notion Done. Browser/web remote export, GPU render, non-Linux atomic replacement and fully packaged-wheel worker are outside this initial P2 scope.
