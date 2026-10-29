@@ -237,6 +237,7 @@ class ArtifactWorker:
         stage = self.work / "stage" / job_id
         log = self.work / "logs" / (job_id + ".log")
         exchanged = False
+        exchange_attempted = False
         keep_staging = False
         try:
             with self.lock, self._connect() as db:
@@ -377,6 +378,7 @@ class ArtifactWorker:
                         "state": "prepared",
                     }), encoding="utf-8")
                     _sync_dir(stage)
+                    exchange_attempted = True
                     atomic_exchange(outputs, destination)
                     exchanged = True
                     # stage/outputs now holds the old version. Keep until
@@ -401,7 +403,22 @@ class ArtifactWorker:
         except Exception as exc:
             # Roll back with the same atomic exchange if any post-publication
             # step fails. A failed rollback is UNKNOWN, never 'failed'.
-            if exchanged:
+            if exchange_attempted and not exchanged:
+                try:
+                    old_hash = row["expected_sha256"]
+                    dest_manifest = _sha(Path(row["output"]) / "manifest.json")
+                    stage_manifest = _sha(stage / "outputs" / "manifest.json")
+                    if (dest_manifest == json.loads(
+                            (stage / "publish-journal.json").read_text())["new_sha256"]
+                            and stage_manifest == old_hash):
+                        exchanged = True
+                    elif not (dest_manifest == old_hash and
+                              stage_manifest == json.loads(
+                                (stage / "publish-journal.json").read_text())["new_sha256"]):
+                        keep_staging = True
+                except Exception:
+                    keep_staging = True
+            if exchanged and not keep_staging:
                 try:
                     with self.lock:
                         atomic_exchange(stage / "outputs", Path(row["output"]))
